@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 import struct
-import subprocess
 import sys
 from pathlib import Path
 
@@ -45,6 +44,27 @@ HEAP_BASE = 0x6000_0000_0000
 TLS_BASE = 0x5F00_0000_0000
 HEAP_CTL_ADDR = TLS_BASE + 0xF000   # [heap_top: u64, heap_limit: u64, slow_malloc: u64, slow_calloc: u64]
 ERRNO_ADDR = TLS_BASE + 0xF020      # int32 errno storage
+DEFAULT_CALL_TIMEOUT_US = 30_000_000
+
+_REDIRECTED_ALLOCATORS = frozenset({
+    'malloc',
+    'free',
+    'calloc',
+    'realloc',
+    'aligned_alloc',
+    'memalign',
+    'posix_memalign',
+    '_Znwm',
+    '_Znam',
+    '_ZnwmRKSt9nothrow_t',
+    '_ZnamRKSt9nothrow_t',
+    '_ZdlPv',
+    '_ZdaPv',
+    '_ZdlPvm',
+    '_ZdaPvm',
+    '_ZdlPvRKSt9nothrow_t',
+    '_ZdaPvRKSt9nothrow_t',
+})
 
 
 class EmuError(RuntimeError):
@@ -102,12 +122,6 @@ def _ensure_unicorn() -> None:
     global UC_ARM64_REG_TPIDR_EL0, UC_ARM64_REG_TPIDRRO_EL0, UC_ARM64_REG_X0, UC_ARM64_REG_X29
     if _HAS_UNICORN and Uc is not None:
         return
-    if not os.environ.get('NSPB_NO_AUTO_PIP'):
-        cmd = [sys.executable, '-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', 'unicorn']
-        try:
-            subprocess.run(cmd, check=False, timeout=180, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
     try:
         from unicorn import (
             Uc as _Uc,
@@ -316,25 +330,25 @@ def _build_fast_stubs() -> tuple[bytes, dict[str, int]]:
             0xD53BD062,             # mrs x2, tpidrro_el0
             0x91403C42,             # add x2, x2, #0xf, lsl #12
             0x9BC17C06,             # umulh x6, x0, x1 (128-bit multiply overflow check)
-            _cbnz_x(6, 22),         # cbnz x6, slow
-            0x9B017C00,             # mul x0, x0, x1
-            0xD35FFC06,             # lsr x6, x0, #31
+            _cbnz_x(6, 22),         # cbnz x6, slow (x0 and x1 remain untouched for _calloc)
+            0x9B017C07,             # mul x7, x0, x1 (keep product in x7 so x0/x1 stay intact)
+            0xD350FCE6,             # lsr x6, x7, #16 (>= 64 KB goes to slow trap for bulk zeroing)
             _cbnz_x(6, 19),         # cbnz x6, slow
-            _cbz_x(0, 2),           # cbz x0, zero_sz
+            _cbz_x(7, 2),           # cbz x7, zero_sz
             _b_uncond(2),           # b align
-            0xD2800020,             # zero_sz: mov x0, #1
-            0x91003C00,             # align: add x0, x0, #15
-            0x927CEC00,             # and x0, x0, #0xfffffffffffffff0
+            0xD2800027,             # zero_sz: mov x7, #1
+            0x91003CE7,             # align: add x7, x7, #15
+            0x927CECE7,             # and x7, x7, #0xfffffffffffffff0
             0xA9401043,             # ldp x3, x4, [x2]
             0x91004065,             # add x5, x3, #16
-            0x8B0000A6,             # add x6, x5, x0
+            0x8B0700A6,             # add x6, x5, x7
             0xEB0400DF,             # cmp x6, x4
             _b_cond(9, _HI),        # b.hi slow
             0xF9000046,             # str x6, [x2]
-            0xF9000060,             # str x0, [x3]
+            0xF9000067,             # str x7, [x3]
             0xAA0503E3,             # mov x3, x5
             0xA8817C7F,             # zero_loop: stp xzr, xzr, [x3], #16
-            0xF1004000,             # subs x0, x0, #16
+            0xF10040E7,             # subs x7, x7, #16
             _b_cond(-2, _NE),       # b.ne zero_loop
             0xAA0503E0,             # mov x0, x5
             0xD65F03C0,             # ret
@@ -394,11 +408,22 @@ def _build_fast_stubs() -> tuple[bytes, dict[str, int]]:
 FAST_STUB_BYTES, FAST_STUB_ADDRS = _build_fast_stubs()
 
 
+_NSO_CACHE: dict[tuple[str, int, int], tuple[bytes, int, int, int]] = {}
+
+
 def nso_load(path: str | Path) -> tuple[bytearray, int, int, int]:
     """Decompress an NSO0 file into `(image_with_bss, text_end, ro_off, data_off)`."""
-    import lz4.block
+    p = Path(path)
+    try:
+        st = p.stat()
+        cache_key: tuple[str, int, int] | None = (os.path.realpath(p), st.st_size, st.st_mtime_ns)
+    except OSError:
+        cache_key = None
+    if cache_key is not None and cache_key in _NSO_CACHE:
+        raw_img, t_end, r_off, d_off = _NSO_CACHE[cache_key]
+        return bytearray(raw_img), t_end, r_off, d_off
 
-    d = Path(path).read_bytes()
+    d = p.read_bytes()
     if len(d) < 0x6C or d[:4] != b'NSO0':
         raise EmuError(f'{path}: not an NSO')
     flags = struct.unpack_from('<I', d, 0x0C)[0]
@@ -414,9 +439,15 @@ def nso_load(path: str | Path) -> tuple[bytearray, int, int, int]:
             raise EmuError(f'{path}: truncated NSO segment {i}')
         raw = d[fo:fo + csz[i]]
         if (flags >> i) & 1:
+            import lz4.block
             raw = lz4.block.decompress(raw, uncompressed_size=sz)
         img[mo:mo + sz] = raw
-    return img, segs[0][1] + segs[0][2], segs[1][1], segs[2][1]
+    t_end, r_off, d_off = segs[0][1] + segs[0][2], segs[1][1], segs[2][1]
+    if cache_key is not None:
+        if len(_NSO_CACHE) >= 4:
+            _NSO_CACHE.clear()
+        _NSO_CACHE[cache_key] = (bytes(img), t_end, r_off, d_off)
+    return img, t_end, r_off, d_off
 
 
 class Module:
@@ -562,7 +593,9 @@ class Machine:
                         val = m.base + add
                     elif typ in (257, 1025, 1026):  # ABS64, GLOB_DAT, JUMP_SLOT
                         n, v, sh = m.syms[si]
-                        if sh:
+                        if n in _REDIRECTED_ALLOCATORS:
+                            val = self.resolve_import(n)
+                        elif sh:
                             val = m.base + v + (add if typ == 257 else 0)
                         elif n in self.TRAPS:
                             val = self.resolve_import(n)
@@ -591,6 +624,16 @@ class Machine:
                                     cur = struct.unpack_from('<Q', m.img, a)[0]
                                     struct.pack_into('<Q', m.img, a, (cur + m.base) & 0xFFFFFFFFFFFFFFFF)
                             where += 63 * 8
+
+                # Redirect any module-defined allocator exports (`malloc`, `free`, `calloc`,
+                # `realloc`, `operator new`, etc.) so direct `BL` calls inside the module also
+                # use the emulator's heap instead of an uninitialized SDK heap.
+                for alloc_sym in _REDIRECTED_ALLOCATORS:
+                    fn_off = m.exports.get(alloc_sym)
+                    if fn_off is not None and 0 <= fn_off <= m.text_end - 16:
+                        target = self.resolve_import(alloc_sym)
+                        m.img[fn_off:fn_off + 16] = struct.pack('<IIQ', 0x58000050, 0xD61F0200, target)
+
                 uc.mem_write(m.base, bytes(m.img))
 
         uc.mem_map(STACK_TOP - STACK_SIZE, STACK_SIZE, UC_PROT_ALL)
@@ -695,7 +738,13 @@ class Machine:
         return next(m for m in self.mods if m.name == name)
 
     # ---- calls ----
-    def call(self, addr: int, *args: int, max_insns: int = 0, timeout_us: int = 0) -> int:
+    def call(
+        self,
+        addr: int,
+        *args: int,
+        max_insns: int = 0,
+        timeout_us: int = DEFAULT_CALL_TIMEOUT_US,
+    ) -> int:
         """Call `addr` with AAPCS64 integer/pointer arguments (`x0..x7`, rest on stack)."""
         uc = self.uc
         sp = STACK_TOP - 0x1000
@@ -721,6 +770,9 @@ class Machine:
             ) from None
         if self.fault:
             raise EmuError(self.fault)
+        pc = uc.reg_read(UC_ARM64_REG_PC)
+        if timeout_us and pc != STOP:
+            raise EmuError(f'emulation timed out at {self.where(pc)} (limit {timeout_us // 1000} ms)')
         return uc.reg_read(UC_ARM64_REG_X0)
 
     def call_fast(
@@ -735,6 +787,8 @@ class Machine:
         r6: int = 0,
         r7: int = 0,
         stack_bytes: bytes = b'',
+        *,
+        timeout_us: int = DEFAULT_CALL_TIMEOUT_US,
     ) -> int:
         """Low-overhead call path for hot inner loops (`Decoder.run`) with pre-packed stack args."""
         uc = self.uc
@@ -755,7 +809,7 @@ class Machine:
         uc.reg_write(UC_ARM64_REG_X29, 0)
         self.fault = None
         try:
-            uc.emu_start(addr, STOP)
+            uc.emu_start(addr, STOP, timeout=timeout_us)
         except UcError as e:
             pc = uc.reg_read(UC_ARM64_REG_PC)
             raise EmuError(
@@ -763,6 +817,9 @@ class Machine:
             ) from None
         if self.fault:
             raise EmuError(self.fault)
+        pc = uc.reg_read(UC_ARM64_REG_PC)
+        if timeout_us and pc != STOP:
+            raise EmuError(f'emulation timed out at {self.where(pc)} (limit {timeout_us // 1000} ms)')
         return uc.reg_read(UC_ARM64_REG_X0)
 
     def where(self, pc: int) -> str:

@@ -13,15 +13,15 @@ Supports the exact wire protocols expected by `shader_split.py`, `uepak.py`, and
 
 Performance optimizations over naive ARM64 emulation:
 1. Native Windows x64 DLL Passthrough (`oo2core_*_win64.dll`):
-   When a native Windows 64-bit Oodle DLL is available (`NSPB_OODLE_DLL`, `toolchain.json`,
-   `%LOCALAPPDATA%\\NS Port Builder\\tools\\oodle`, or `PATH`), `OodleLZ_Decompress` calls execute
-   natively on the host CPU via `ctypes` without starting Unicorn, falling back to the game's
-   ARM64 decoder only if a block fails.
-2. Single-Module Loading & Disk Pre-Relocated Image Cache:
+   When a native Windows 64-bit Oodle DLL is configured in an explicit location (`NSPB_OODLE_DLL`,
+   `toolchain.json`, or `%LOCALAPPDATA%\\NS Port Builder\\tools\\oodle`), `OodleLZ_Decompress` calls
+   execute natively on the host CPU via `ctypes` without starting Unicorn, falling back to the
+   game's ARM64 decoder only if a block fails.
+2. Single-Module Loading & Work-Folder Pre-Relocated Image Cache:
    Only the module holding the decoder (`main`, or a `subsdk` if absent from `main`) is loaded,
    skipping the multi-megabyte Nintendo `sdk` NSO. Once relocated, the module snapshot and decoder
-   offsets are cached in the temp directory keyed by `(path, size, mtime_ns)`, reducing worker
-   startup from seconds to milliseconds.
+   offsets are stored under the build work folder as plain JSON metadata plus raw binary bytes
+   keyed by the hashes of `arm64_emu.py`, `oodle_emu.py`, and the module's `(path, size, mtime_ns)`.
 3. In-VM ARM64 Fast Stubs (`arm64_emu.FAST_BASE`):
    `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `malloc`, `calloc`, and `free` run as native
    ARM64 machine code inside the VM with zero Python `UC_HOOK_CODE` traps.
@@ -30,20 +30,17 @@ Performance optimizations over naive ARM64 emulation:
    across all requests.
 5. Multi-Core Parallel `DM_OODLE_JOB` Sharding:
    Large Unreal shader jobs (such as OCTOPATH TRAVELER 0's 10,596 shaders) are sharded across
-   parallel worker processes that warm-start from the disk relocation cache.
+   parallel worker processes that warm-start from the work-folder relocation cache.
 """
 from __future__ import annotations
 
 import ctypes
-import glob
 import hashlib
+import json
 import os
-import pickle
-import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import zlib
 from pathlib import Path
 
@@ -53,7 +50,7 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import arm64_emu as E  # type: ignore[no-redef]
 
-_CACHE_VERSION = b'nspb-oodle-cache-v2'
+_CACHE_VERSION = b'nspb-oodle-cache-v3-json-bin'
 _REDIRECT_SIGNATURES = (b'LZ5_decompress_safe', b'OodleLZ_Decompress', b'oodlelzcompressors.cpp')
 
 
@@ -130,8 +127,21 @@ def has_decoder(paths: list[str | Path] | str | Path) -> bool:
 
 
 # ---- Native Windows x86_64 Oodle DLL Passthrough ----
+def _load_toolchain_module():
+    if __package__:
+        from . import toolchain as tc
+        return tc
+    import toolchain as tc  # type: ignore[no-redef]
+    return tc
+
+
 def find_native_oodle_dll() -> Path | None:
-    """Locate a native 64-bit Oodle DLL (`oo2core_*_win64.dll`) if present on the machine."""
+    """Locate a native 64-bit Oodle DLL (`oo2core_*_win64.dll`) from explicit locations only.
+
+    Checks `NSPB_OODLE_DLL`, `oodle_dll` in `toolchain.json`, and
+    `%LOCALAPPDATA%\\NS Port Builder\\tools\\oodle` (`toolchain.tools_dir() / 'oodle'`). Never
+    probes `PATH` or the current working directory.
+    """
     cands: list[Path] = []
     if env_dll := os.environ.get('NSPB_OODLE_DLL'):
         ep = Path(env_dll)
@@ -141,7 +151,7 @@ def find_native_oodle_dll() -> Path | None:
             cands.extend(sorted(ep.glob('oo2core_*_win64.dll'), reverse=True))
             cands.extend(sorted(ep.glob('oo2core_*.dll'), reverse=True))
     try:
-        import toolchain as tc
+        tc = _load_toolchain_module()
         cfg = tc.load_config()
         if cfg_dll := cfg.get('oodle_dll'):
             cp = Path(cfg_dll)
@@ -149,16 +159,13 @@ def find_native_oodle_dll() -> Path | None:
                 cands.append(cp)
             elif cp.is_dir():
                 cands.extend(sorted(cp.glob('oo2core_*_win64.dll'), reverse=True))
-        tools_oodle = tc.tools_root() / 'oodle'
+                cands.extend(sorted(cp.glob('oo2core_*.dll'), reverse=True))
+        tools_oodle = tc.tools_dir() / 'oodle'
         if tools_oodle.is_dir():
             cands.extend(sorted(tools_oodle.glob('oo2core_*_win64.dll'), reverse=True))
             cands.extend(sorted(tools_oodle.glob('oo2core_*.dll'), reverse=True))
     except Exception:
         pass
-    for ver in (9, 8, 7, 6, 5):
-        name = f'oo2core_{ver}_win64.dll'
-        if found := shutil.which(name):
-            cands.append(Path(found))
     for c in cands:
         if c.is_file():
             return c
@@ -334,18 +341,147 @@ def _locate_decoder_in_module(mod: E.Module) -> tuple[str, int, tuple[int, int, 
     return 'OodleLZDecoder_DecodeSome', src[1], lzd
 
 
-def _cache_file_for(mod_paths: list[tuple[str, str]]) -> Path | None:
-    if os.environ.get('NSPB_OODLE_NO_CACHE'):
+# ---- Safe JSON + raw binary relocation cache inside the build work folder ----
+_SOURCE_DIGEST: bytes | None = None
+
+
+def _source_digest() -> bytes:
+    global _SOURCE_DIGEST
+    if _SOURCE_DIGEST is None:
+        h = hashlib.sha256(_CACHE_VERSION)
+        for src_file in (Path(E.__file__).resolve(), Path(__file__).resolve()):
+            try:
+                h.update(src_file.read_bytes())
+            except OSError:
+                pass
+        h.update(E.FAST_STUB_BYTES)
+        _SOURCE_DIGEST = h.digest()
+    return _SOURCE_DIGEST
+
+
+def _cache_dir_for(exefs: Path, patched: str | Path | None = None) -> Path:
+    if dm_root := os.environ.get('DM_ROOT'):
+        return Path(dm_root) / 'tools' / 'oodle_cache'
+    if patched is not None:
+        p = Path(patched).resolve()
+        if p.name.startswith('patched_'):
+            return p.parent / 'tools' / 'oodle_cache'
+    if exefs.parent.parent.name == 'extract':
+        return exefs.parent.parent.parent / 'tools' / 'oodle_cache'
+    return exefs.parent / 'oodle_cache'
+
+
+def _cache_file_for(
+    mod_paths: list[tuple[str, str]],
+    *,
+    exefs: Path | None = None,
+    patched: str | Path | None = None,
+) -> Path | None:
+    if os.environ.get('NSPB_OODLE_NO_CACHE') or not mod_paths:
         return None
-    h = hashlib.sha256(_CACHE_VERSION)
-    h.update(E.FAST_STUB_BYTES)
+    h = hashlib.sha256(_source_digest())
     for name, p in mod_paths:
         try:
             st = os.stat(p)
         except OSError:
             return None
         h.update(f'{name}\0{os.path.realpath(p)}\0{st.st_size}\0{st.st_mtime_ns}\0'.encode())
-    return Path(tempfile.gettempdir()) / f'nspb_oodle_{h.hexdigest()[:24]}.cache'
+    base_exefs = exefs if exefs is not None else Path(mod_paths[0][1]).resolve().parent
+    cdir = _cache_dir_for(base_exefs, patched)
+    return cdir / f'nspb_oodle_{h.hexdigest()[:24]}.json'
+
+
+def _write_reloc_cache(meta_path: Path, snap: dict) -> None:
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    bin_path = meta_path.with_suffix('.bin')
+    vm = snap['vm']
+    img_blobs = bytearray()
+    mods_meta: list[dict] = []
+    for m_info in vm['mods']:
+        raw_img = bytes(m_info['img'])
+        mods_meta.append({
+            'name': m_info['name'],
+            'base': int(m_info['base']),
+            'text_end': int(m_info['text_end']),
+            'ro_off': int(m_info['ro_off']),
+            'data_off': int(m_info['data_off']),
+            'mod0': int(m_info['mod0']),
+            'exports': {str(k): int(v) for k, v in m_info['exports'].items()},
+            'img_offset': len(img_blobs),
+            'img_size': len(raw_img),
+        })
+        img_blobs.extend(raw_img)
+
+    doc = {
+        'format': 1,
+        'kind': snap['kind'],
+        'off': int(snap['off']),
+        'mod_name': snap['mod_name'],
+        'lzd': list(snap['lzd']) if snap['lzd'] is not None else None,
+        'traps': {str(k): int(v) for k, v in vm['traps'].items()},
+        'trap_names': list(vm['trap_names']),
+        'total_img_bytes': len(img_blobs),
+        'mods': mods_meta,
+    }
+    comp_bin = zlib.compress(bytes(img_blobs), level=1)
+    pid = os.getpid()
+    tmp_bin = bin_path.with_name(f'{bin_path.name}.tmp.{pid}')
+    tmp_meta = meta_path.with_name(f'{meta_path.name}.tmp.{pid}')
+    try:
+        tmp_bin.write_bytes(comp_bin)
+        os.replace(tmp_bin, bin_path)
+        tmp_meta.write_text(json.dumps(doc), encoding='utf-8')
+        os.replace(tmp_meta, meta_path)
+    finally:
+        tmp_bin.unlink(missing_ok=True)
+        tmp_meta.unlink(missing_ok=True)
+
+
+def _read_reloc_cache(meta_path: Path) -> dict | None:
+    bin_path = meta_path.with_suffix('.bin')
+    if not meta_path.is_file() or not bin_path.is_file():
+        return None
+    doc = json.loads(meta_path.read_text(encoding='utf-8'))
+    if not isinstance(doc, dict) or doc.get('format') != 1:
+        return None
+    raw_all = zlib.decompress(bin_path.read_bytes())
+    total_expected = int(doc.get('total_img_bytes', -1))
+    if len(raw_all) != total_expected:
+        return None
+    mv = memoryview(raw_all)
+    mods_out: list[dict] = []
+    for m_meta in doc['mods']:
+        off = int(m_meta['img_offset'])
+        sz = int(m_meta['img_size'])
+        if off < 0 or sz <= 0 or off > len(raw_all) - sz:
+            return None
+        mods_out.append({
+            'name': str(m_meta['name']),
+            'base': int(m_meta['base']),
+            'img': bytes(mv[off:off + sz]),
+            'text_end': int(m_meta['text_end']),
+            'ro_off': int(m_meta['ro_off']),
+            'data_off': int(m_meta['data_off']),
+            'mod0': int(m_meta['mod0']),
+            'exports': {str(k): int(v) for k, v in m_meta['exports'].items()},
+        })
+    lzd_raw = doc.get('lzd')
+    lzd = (
+        (int(lzd_raw[0]), int(lzd_raw[1]), int(lzd_raw[2]), int(lzd_raw[3]))
+        if isinstance(lzd_raw, list) and len(lzd_raw) == 4
+        else None
+    )
+    return {
+        'kind': str(doc['kind']),
+        'off': int(doc['off']),
+        'mod_name': str(doc['mod_name']),
+        'lzd': lzd,
+        'vm': {
+            'traps': {str(k): int(v) for k, v in doc['traps'].items()},
+            'trap_names': [str(x) for x in doc['trap_names']],
+            'mods': mods_out,
+        },
+    }
 
 
 class Decoder:
@@ -371,7 +507,7 @@ class Decoder:
                 self.native_dll = None
 
         # If a native Oodle DLL is loaded and `main` contains Oodle (not LZ5), we can defer
-        # initializing Unicorn until a block actually needs the emulated fallback!
+        # initializing Unicorn until a block actually needs the emulated fallback.
         main_file = self.exefs / 'main'
         if self.native_dll is not None and main_file.is_file():
             try:
@@ -399,20 +535,24 @@ class Decoder:
         if not main_pair:
             die(f'oodle_emu: no main NSO in {exefs}')
 
-        cache_path = _cache_file_for(main_pair) if self.use_fast_stubs else None
+        cache_path = (
+            _cache_file_for(main_pair, exefs=exefs, patched=self.patched)
+            if self.use_fast_stubs
+            else None
+        )
         if cache_path is not None and cache_path.is_file():
             try:
-                raw = zlib.decompress(cache_path.read_bytes())
-                snap = pickle.loads(raw)
-                self.kind = snap['kind']
-                self.off = snap['off']
-                self.mod_name = snap['mod_name']
-                self.lzd = snap['lzd']
-                self.m = E.Machine([], use_fast_stubs=self.use_fast_stubs, pre_relocated=snap['vm'])
-                target_mod = self.m.module(self.mod_name)
-                self.fn = target_mod.base + self.off
-                self._alloc_buffers()
-                return
+                snap = _read_reloc_cache(cache_path)
+                if snap is not None:
+                    self.kind = snap['kind']
+                    self.off = snap['off']
+                    self.mod_name = snap['mod_name']
+                    self.lzd = snap['lzd']
+                    self.m = E.Machine([], use_fast_stubs=self.use_fast_stubs, pre_relocated=snap['vm'])
+                    target_mod = self.m.module(self.mod_name)
+                    self.fn = target_mod.base + self.off
+                    self._alloc_buffers()
+                    return
             except Exception:
                 pass
 
@@ -423,7 +563,7 @@ class Decoder:
         target_mod = main_mod
 
         if found is None:
-            # Check `subsdk*` only if `main` did not contain the decoder; never load `sdk`.
+            # Check `subsdk*` only if `main` did not contain the decoder, never loading `sdk`.
             sub_pairs = main_pair + [
                 (p.name, str(p))
                 for p in sorted(exefs.iterdir())
@@ -451,25 +591,18 @@ class Decoder:
         self.mod_name = target_mod.name
         self.fn = target_mod.base + self.off
 
-        if self.kind == 'LZ5_decompress_safe':
-            for name in ('malloc', 'free', 'calloc', 'realloc'):
-                for mod in self.m.mods:
-                    if name in mod.exports:
-                        self.redirect(mod.base + mod.exports[name], name)
-
         if cache_path is not None and len(self.m.mods) == 1:
             try:
-                snap = {
-                    'kind': self.kind,
-                    'off': self.off,
-                    'mod_name': self.mod_name,
-                    'lzd': self.lzd,
-                    'vm': self.m.export_snapshot(),
-                }
-                blob = zlib.compress(pickle.dumps(snap, protocol=pickle.HIGHEST_PROTOCOL), level=1)
-                tmp_path = cache_path.with_suffix(f'.tmp.{os.getpid()}')
-                tmp_path.write_bytes(blob)
-                os.replace(tmp_path, cache_path)
+                _write_reloc_cache(
+                    cache_path,
+                    {
+                        'kind': self.kind,
+                        'off': self.off,
+                        'mod_name': self.mod_name,
+                        'lzd': self.lzd,
+                        'vm': self.m.export_snapshot(),
+                    },
+                )
             except Exception:
                 pass
 
@@ -548,7 +681,7 @@ class Decoder:
             return -1
         out = self.lzd_out
         pos = cpos = 0
-        stack_some = struct.pack('<3Q', 0, 0, 3)
+        stack_some = struct.pack('<4Q', 1, 0, 0, 3)
         while pos < rl:
             m.write(out, b'\0' * 16)
             ok = (
@@ -562,7 +695,7 @@ class Decoder:
                     rl - pos,
                     c + cpos,
                     cl - cpos,
-                    stack_bytes=struct.pack('<4Q', 1, 0, 0, 3),
+                    stack_bytes=stack_some,
                 )
                 & 0xFFFFFFFF
             )
@@ -571,7 +704,6 @@ class Decoder:
                 break
             pos += done
             cpos += used
-        del stack_some
         m.call_fast(destroy, dec)
         return pos
 
@@ -652,6 +784,35 @@ def _write_job_shard(path: Path, records: list[tuple[int, int, bytes]]) -> None:
             f.write(comp)
 
 
+def _read_shard_output(out_sp: Path, expected_count: int) -> list[bytes | None] | None:
+    """Read a worker shard's `.out` file, returning `None` only if the file is missing or truncated."""
+    if not out_sp.is_file():
+        return None
+    try:
+        data = out_sp.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 8:
+        return None
+    smagic, sn = struct.unpack_from('<II', data, 0)
+    if smagic != 0x524F4D44 or sn != expected_count:
+        return None
+    pos = 8
+    items: list[bytes | None] = []
+    for _ in range(sn):
+        if pos + 4 > len(data):
+            return None
+        got_len = struct.unpack_from('<I', data, pos)[0]
+        pos += 4
+        if pos + got_len > len(data):
+            return None
+        items.append(data[pos:pos + got_len] if got_len else None)
+        pos += got_len
+    if pos != len(data):
+        return None
+    return items
+
+
 def job(dec: Decoder, path: str) -> int:
     records = _read_job_records(path)
     n = len(records)
@@ -671,14 +832,15 @@ def job(dec: Decoder, path: str) -> int:
     should_shard = (
         not dec.using_native_dll
         and (
-            (explicit_w >= 2 and n >= 16)
+            (explicit_w >= 2 and n >= 4)
             or (explicit_w == 0 and n >= 512 and total_raw_bytes >= (4 << 20))
         )
     )
     max_w = explicit_w if explicit_w >= 2 else min(os.cpu_count() or 4, 8)
     if should_shard and max_w >= 2:
-        workers = min(max_w, max(2, n // 16))
+        workers = min(max_w, max(2, n // 2))
         shard_paths: list[Path] = []
+        log_files: list[tuple[int, Path, object]] = []
         procs: list[tuple[int, Path, subprocess.Popen]] = []
         try:
             # Partition records evenly by raw output bytes so each worker does similar work
@@ -694,34 +856,51 @@ def job(dec: Decoder, path: str) -> int:
                 env = dict(os.environ, NSPB_OODLE_WORKERS='1')
                 for s_idx, b in enumerate(buckets):
                     sp = Path(f'{path}.shard.{os.getpid()}.{s_idx}')
-                    shard_paths.append(sp)
+                    lp = Path(f'{path}.shard.{os.getpid()}.{s_idx}.log')
+                    shard_paths.extend((sp, lp))
                     _write_job_shard(sp, [(cl, rl, comp) for _i, cl, rl, comp in b])
                     s_env = dict(env, DM_OODLE_JOB=str(sp))
+                    lf = open(lp, 'w', encoding='utf-8', errors='replace')
+                    log_files.append((s_idx, lp, lf))
                     p = subprocess.Popen(
                         [sys.executable, str(Path(__file__).resolve()), str(dec.patched)],
                         env=s_env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
+                        stdout=lf,
+                        stderr=subprocess.STDOUT,
                     )
                     procs.append((s_idx, sp, p))
 
                 all_ok = True
                 results: dict[int, bytes | None] = {}
-                for s_idx, sp, p in procs:
+                red_logged = 0
+                for (s_idx, sp, p), (_li, lp, lf) in zip(procs, log_files):
                     rc = p.wait()
+                    lf.close()
                     out_sp = Path(str(sp) + '.out')
                     shard_paths.append(out_sp)
-                    if rc != 0 or not out_sp.is_file():
+                    try:
+                        shard_log = lp.read_text(encoding='utf-8', errors='replace').splitlines()
+                    except OSError:
+                        shard_log = []
+                    for ln in shard_log:
+                        if '[RED]' in ln and red_logged < 8:
+                            red_logged += 1
+                            print(f'{ln} (shard {s_idx})', file=sys.stderr, flush=True)
+
+                    # Accept a valid `.out` when `rc` is 0 (all records decoded) or 1 (some records
+                    # failed and were written with length 0, matching serial mode).
+                    shard_items = (
+                        _read_shard_output(out_sp, len(buckets[s_idx]))
+                        if rc in (0, 1)
+                        else None
+                    )
+                    if shard_items is None:
+                        tail = ' | '.join(shard_log[-4:]) if shard_log else 'no log output'
+                        log(f'[RED] DM_OODLE_JOB: shard {s_idx} failed (exit {rc}): {tail}')
                         all_ok = False
                         break
-                    with open(out_sp, 'rb') as sf:
-                        smagic, sn = struct.unpack('<II', sf.read(8))
-                        if smagic != 0x524F4D44 or sn != len(buckets[s_idx]):
-                            all_ok = False
-                            break
-                        for orig_idx, _cl, rl, _comp in buckets[s_idx]:
-                            got_len = struct.unpack('<I', sf.read(4))[0]
-                            results[orig_idx] = sf.read(got_len) if got_len else None
+                    for (orig_idx, _cl, _rl, _comp), item in zip(buckets[s_idx], shard_items):
+                        results[orig_idx] = item
 
                 if all_ok and len(results) == n:
                     bad = total = 0
@@ -741,8 +920,8 @@ def job(dec: Decoder, path: str) -> int:
                         f'({bad} failed, {total / 1048576:.1f} MB out) -> {path}.out'
                     )
                     return 1 if bad else 0
-        except Exception:
-            pass
+        except Exception as e:
+            log(f'[RED] DM_OODLE_JOB: parallel sharding error ({e}), falling back to serial')
         finally:
             for _, _, p in procs:
                 if p.poll() is None:
@@ -751,6 +930,11 @@ def job(dec: Decoder, path: str) -> int:
                         p.wait()
                     except Exception:
                         pass
+            for _li, _lp, lf in log_files:
+                try:
+                    lf.close()
+                except Exception:
+                    pass
             for sp in shard_paths:
                 try:
                     sp.unlink(missing_ok=True)

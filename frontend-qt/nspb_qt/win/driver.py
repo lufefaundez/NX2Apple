@@ -22,8 +22,8 @@ What gets replaced, and why:
 `build_mac_host`          points decoder tool-mode steps (`DM_OODLE_SERVE` / `DM_OODLE_JOB`) at
                           `oodle_emu.py` (native x64 Oodle DLL passthrough or emulated ARM64)
 `toolchain`               the shader cache key needs the Windows Metal compiler's version
-`capture_shaders`         reconstructs LÖVE OpenGL shaders offline via `love_shaders.py`; other
-                          run-time shader captures explain the device-capture workflow
+`capture_shaders`         run-time shader captures: refused with an explanation of the
+                          device-capture workflow
 `mac_app` / `mac_run`     Mac platforms: refused
 `build_ipa.sh`            replaced by `build_app.py` (through the shim, which also has to cover
                           the child processes the pipeline starts)
@@ -265,7 +265,7 @@ def patch(mod: ModuleType, repo: Path, *, j: int | None = None) -> None:
             'do not need it.')
     mod.build_mac_host = build_mac_host
     if hasattr(mod, 'UE_DECODE_SECS') and isinstance(mod.UE_DECODE_SECS, (int, float)):
-        mod.UE_DECODE_SECS = max(int(mod.UE_DECODE_SECS) * 20, 3600)
+        mod.UE_DECODE_SECS = max(int(mod.UE_DECODE_SECS) * 3, 900)
 
     if not hasattr(mod, '_nspb_orig_decode_ue_shaders') and hasattr(mod, 'decode_ue_shaders'):
         mod._nspb_orig_decode_ue_shaders = mod.decode_ue_shaders
@@ -454,43 +454,7 @@ def patch(mod: ModuleType, repo: Path, *, j: int | None = None) -> None:
                 'build from the same work folder (its shader/ and extract/ are reused).')
         return fn
     mod.capture_glslc = _refuse_capture('this game')
-
-    def capture_shaders(repo_, d, patched, work, env, logs, g, api='gl', *a, **kw):
-        """Reconstruct LÖVE OpenGL shaders offline via `love_shaders.py`, or refuse other captures."""
-        if api == 'gl' and d is not None:
-            d_path = Path(d)
-            out = d_path / 'gl_capture'
-            want = mod.capture_wanted(g, 'gl') if (g is not None and hasattr(mod, 'capture_wanted')) else None
-            if want and hasattr(mod, 'capture_done') and mod.capture_done(out, 'gl') >= want:
-                mod.PROG.stage('GL shader capture')
-                say(f'reusing the captured run-time shaders: {out}')
-                mod.PROG.end('reused')
-                return out
-            main_nso = d_path / 'ExeFS' / 'main'
-            if main_nso.is_file():
-                from . import love_shaders
-                part = d_path / 'gl_capture.partial'
-                mod.rmtree(part)
-                table = None
-                if g is not None and hasattr(mod, 'CAPTURES'):
-                    try:
-                        table = g.table(mod.CAPTURES['gl']['table'])
-                    except Exception:
-                        table = None
-                rom_src = mod.rfs.source(d_path) if hasattr(mod, 'rfs') else (d_path / 'RomFS')
-                res = love_shaders.generate(main_nso, rom_src, part, table, log=say, repo=repo_)
-                if res is not None:
-                    mod.PROG.stage('GL shader reconstruction (LÖVE)')
-                    if hasattr(mod, 'swap_in'):
-                        mod.swap_in(part, out)
-                    else:
-                        mod.rmtree(out)
-                        part.rename(out)
-                    mod.PROG.end(f'{len(res[0])} shaders')
-                    return out
-        return _refuse_capture('this game')(repo_, d, patched, work, env, logs, g, api, *a, **kw)
-
-    mod.capture_shaders = capture_shaders
+    mod.capture_shaders = _refuse_capture('this game')
 
     def capture_jit(py_, repo_, d, patched, work, env, logs, g, *a, **kw):
         if (Path(d) / 'jit' / 'jit.img').is_file():
