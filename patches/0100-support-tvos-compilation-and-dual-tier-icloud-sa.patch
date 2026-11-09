@@ -1,0 +1,273 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 16:04:53 -0300
+Subject: [PATCH] Support tvOS compilation and dual-tier iCloud save sync with
+ Mac bridge
+
+Upstream-Status: pending
+Reason: Dual-tier remote save sync via CloudKit and Mac iCloud Drive HTTP Save Bridge for Apple TV and iOS
+Issue: LNPANDY/NX2Apple#731
+
+---
+ dm/host/save_sync_remote.m | 252 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 252 insertions(+)
+ create mode 100644 dm/host/save_sync_remote.m
+
+diff --git a/dm/host/save_sync_remote.m b/dm/host/save_sync_remote.m
+new file mode 100644
+index 0000000..15d74a6
+--- /dev/null
++++ b/dm/host/save_sync_remote.m
+@@ -0,0 +1,252 @@
++// Remote transports for cloud save sync (dm/host/save_sync.h):
++//   1. cloudkit://<container>/<title ID>/save.dmsync — private CloudKit database (Paid Apple Developer accounts on iOS, tvOS and macOS)
++//   2. http(s)://<host>:<port>/saves/<title ID>/save.dmsync — LAN / HTTP save bridge backed by Mac iCloud Drive (Personal Teams on tvOS and iOS)
++// Auth token for HTTP is read from DM_SAVE_SYNC_TOKEN and sent in Authorization: Bearer <token> so secrets never appear in URLs or logs.
++// If DM_SAVE_SYNC_FALLBACK is set and the primary HTTP host cannot be reached (e.g. .local mDNS timeout), one retry goes to the fallback base URL.
++#import <CloudKit/CloudKit.h>
++#import <Foundation/Foundation.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "save_sync.h"
++
++int dm_save_sync_remote_is_url(const char *cloud) {
++    return cloud && (!strncmp(cloud, "cloudkit://", 11) || !strncmp(cloud, "http://", 7) || !strncmp(cloud, "https://", 8));
++}
++
++static BOOL parse_cloudkit(const char *cloud, NSString **containerOut, NSString **titleOut) {
++    if (!cloud || strncmp(cloud, "cloudkit://", 11)) return NO;
++    NSString *rest = @(cloud + 11);
++    NSArray<NSString *> *parts = [rest componentsSeparatedByString:@"/"];
++    if (parts.count < 2) return NO;
++    NSString *container = parts[0];
++    NSString *title = parts[1].uppercaseString;
++    if (!container.length || !title.length) return NO;
++    *containerOut = container;
++    *titleOut = title;
++    return YES;
++}
++
++static int cloudkit_fetch(const char *cloud, const char *local) {
++    NSString *container = nil, *title = nil;
++    if (!parse_cloudkit(cloud, &container, &title)) {
++        fprintf(stderr, "[dm] [RED] save sync: invalid CloudKit URL %s\n", cloud);
++        return -1;
++    }
++    CKDatabase *db = [CKContainer containerWithIdentifier:container].privateCloudDatabase;
++    CKRecordID *rid = [[CKRecordID alloc] initWithRecordName:[NSString stringWithFormat:@"save-%@", title]];
++    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
++    __block int result = -1;
++    [db fetchRecordWithID:rid completionHandler:^(CKRecord *rec, NSError *err) {
++        if (err) {
++            if ([err.domain isEqualToString:CKErrorDomain] && err.code == CKErrorUnknownItem) result = 0;
++            else fprintf(stderr, "[dm] [RED] save sync: CloudKit fetch %s failed: %s\n", cloud, err.localizedDescription.UTF8String ?: "unknown error");
++        } else {
++            CKAsset *asset = [rec[@"bundle"] isKindOfClass:CKAsset.class] ? (CKAsset *)rec[@"bundle"] : nil;
++            if (!asset.fileURL) {
++                result = 0;
++            } else {
++                NSFileManager *fm = [NSFileManager new];
++                NSURL *dst = [NSURL fileURLWithPath:@(local)];
++                NSError *copyErr = nil;
++                [fm removeItemAtURL:dst error:nil];
++                if ([fm copyItemAtURL:asset.fileURL toURL:dst error:&copyErr]) result = 1;
++                else fprintf(stderr, "[dm] [RED] save sync: copying CloudKit asset for %s failed: %s\n", cloud, copyErr.localizedDescription.UTF8String ?: "copy failed");
++            }
++        }
++        dispatch_semaphore_signal(sem);
++    }];
++    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.5 * NSEC_PER_SEC))) != 0) {
++        fprintf(stderr, "[dm] [RED] save sync: CloudKit fetch timed out for %s\n", cloud);
++        return -1;
++    }
++    return result;
++}
++
++static int cloudkit_store(const char *local, const char *cloud) {
++    NSString *container = nil, *title = nil;
++    if (!parse_cloudkit(cloud, &container, &title)) {
++        fprintf(stderr, "[dm] [RED] save sync: invalid CloudKit URL %s\n", cloud);
++        return 0;
++    }
++    CKDatabase *db = [CKContainer containerWithIdentifier:container].privateCloudDatabase;
++    CKRecordID *rid = [[CKRecordID alloc] initWithRecordName:[NSString stringWithFormat:@"save-%@", title]];
++    CKRecord *rec = [[CKRecord alloc] initWithRecordType:@"NXSave" recordID:rid];
++    rec[@"bundle"] = [[CKAsset alloc] initWithFileURL:[NSURL fileURLWithPath:@(local)]];
++    rec[@"title"] = title;
++    rec[@"updatedAt"] = [NSDate date];
++
++    CKModifyRecordsOperation *op = [[CKModifyRecordsOperation alloc] initWithRecordsToSave:@[rec] recordIDsToDelete:nil];
++    op.savePolicy = CKRecordSaveAllKeys;
++    op.qualityOfService = NSQualityOfServiceUserInitiated;
++    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
++    __block int ok = 0;
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++    op.modifyRecordsCompletionBlock = ^(NSArray<CKRecord *> *saved, NSArray<CKRecordID *> *deleted, NSError *err) {
++        (void)saved; (void)deleted;
++        if (err) fprintf(stderr, "[dm] [RED] save sync: CloudKit store %s failed: %s\n", cloud, err.localizedDescription.UTF8String ?: "unknown error");
++        else ok = 1;
++        dispatch_semaphore_signal(sem);
++    };
++#pragma clang diagnostic pop
++    [db addOperation:op];
++    if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC))) != 0) {
++        [op cancel];
++        fprintf(stderr, "[dm] [RED] save sync: CloudKit store timed out for %s\n", cloud);
++        return 0;
++    }
++    return ok;
++}
++
++static NSString *strip_slashes(NSString *s) {
++    while (s.length > 1 && [s hasSuffix:@"/"]) s = [s substringToIndex:s.length - 1];
++    return s;
++}
++
++static NSString *fallback_http_url(NSString *primary) {
++    const char *fb = getenv("DM_SAVE_SYNC_FALLBACK");
++    if (!fb || !*fb) return nil;
++    NSString *fbBase = strip_slashes(@(fb));
++    if (!fbBase.length) return nil;
++    const char *baseEnv = getenv("DM_SAVE_SYNC");
++    if (baseEnv && *baseEnv) {
++        NSString *base = strip_slashes(@(baseEnv));
++        if (base.length && [primary hasPrefix:base]) {
++            NSString *cand = [fbBase stringByAppendingString:[primary substringFromIndex:base.length]];
++            return [cand isEqualToString:primary] ? nil : cand;
++        }
++    }
++    NSURL *u = [NSURL URLWithString:primary];
++    NSArray<NSString *> *parts = u.pathComponents;
++    if (parts.count >= 2) {
++        NSString *tail = [NSString stringWithFormat:@"/%@/%@", parts[parts.count - 2], parts.lastObject];
++        NSString *cand = [fbBase stringByAppendingString:tail];
++        return [cand isEqualToString:primary] ? nil : cand;
++    }
++    return nil;
++}
++
++static NSMutableURLRequest *make_http_request(NSString *urlStr, NSString *method, NSTimeInterval timeout) {
++    NSURL *url = [NSURL URLWithString:urlStr];
++    if (!url) return nil;
++    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:timeout];
++    req.HTTPMethod = method;
++    const char *tok = getenv("DM_SAVE_SYNC_TOKEN");
++    if (tok && *tok) [req setValue:[NSString stringWithFormat:@"Bearer %s", tok] forHTTPHeaderField:@"Authorization"];
++    return req;
++}
++
++static int http_fetch_once(NSString *urlStr, const char *local, NSTimeInterval timeout, BOOL *transportErr) {
++    *transportErr = NO;
++    NSMutableURLRequest *req = make_http_request(urlStr, @"GET", timeout);
++    if (!req) return -1;
++    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
++    cfg.timeoutIntervalForRequest = timeout;
++    cfg.timeoutIntervalForResource = timeout;
++    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
++    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
++    __block NSData *body = nil;
++    __block NSInteger status = 0;
++    __block NSError *netErr = nil;
++    [[session dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
++        body = data;
++        if ([resp isKindOfClass:NSHTTPURLResponse.class]) status = ((NSHTTPURLResponse *)resp).statusCode;
++        netErr = err;
++        dispatch_semaphore_signal(sem);
++    }] resume];
++    BOOL timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((timeout + 0.5) * NSEC_PER_SEC))) != 0;
++    [session invalidateAndCancel];
++    if (timedOut || netErr) {
++        *transportErr = YES;
++        return -1;
++    }
++    if (status == 404) return 0;
++    if (status == 200 && body) {
++        NSError *writeErr = nil;
++        if ([body writeToFile:@(local) options:NSDataWritingAtomic error:&writeErr]) return 1;
++        fprintf(stderr, "[dm] [RED] save sync: writing fetched save to %s failed: %s\n", local, writeErr.localizedDescription.UTF8String ?: "write error");
++        return -1;
++    }
++    fprintf(stderr, "[dm] [RED] save sync: HTTP fetch returned status %ld\n", (long)status);
++    return -1;
++}
++
++static int http_fetch(const char *cloud, const char *local) {
++    NSString *primary = @(cloud);
++    NSString *fallback = fallback_http_url(primary);
++    NSTimeInterval timeout = fallback ? 4.0 : 8.0;
++    BOOL transportErr = NO;
++    int r = http_fetch_once(primary, local, timeout, &transportErr);
++    if (r < 0 && transportErr && fallback) {
++        r = http_fetch_once(fallback, local, 4.0, &transportErr);
++    }
++    if (r < 0 && transportErr) fprintf(stderr, "[dm] [RED] save sync: HTTP save bridge unreachable (%s)\n", cloud);
++    return r;
++}
++
++static int http_store_once(NSData *payload, NSString *urlStr, NSTimeInterval timeout, BOOL *transportErr) {
++    *transportErr = NO;
++    NSMutableURLRequest *req = make_http_request(urlStr, @"PUT", timeout);
++    if (!req) return 0;
++    [req setValue:@"application/octet-stream" forHTTPHeaderField:@"Content-Type"];
++    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
++    cfg.timeoutIntervalForRequest = timeout;
++    cfg.timeoutIntervalForResource = timeout;
++    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
++    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
++    __block NSInteger status = 0;
++    __block NSError *netErr = nil;
++    [[session uploadTaskWithRequest:req fromData:payload completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
++        (void)data;
++        if ([resp isKindOfClass:NSHTTPURLResponse.class]) status = ((NSHTTPURLResponse *)resp).statusCode;
++        netErr = err;
++        dispatch_semaphore_signal(sem);
++    }] resume];
++    BOOL timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((timeout + 0.5) * NSEC_PER_SEC))) != 0;
++    [session invalidateAndCancel];
++    if (timedOut || netErr) {
++        *transportErr = YES;
++        return 0;
++    }
++    if (status == 200 || status == 201 || status == 204) return 1;
++    fprintf(stderr, "[dm] [RED] save sync: HTTP store returned status %ld\n", (long)status);
++    return 0;
++}
++
++static int http_store(const char *local, const char *cloud) {
++    NSError *readErr = nil;
++    NSData *payload = [NSData dataWithContentsOfFile:@(local) options:0 error:&readErr];
++    if (!payload) {
++        fprintf(stderr, "[dm] [RED] save sync: reading %s for HTTP store failed: %s\n", local, readErr.localizedDescription.UTF8String ?: "read error");
++        return 0;
++    }
++    NSString *primary = @(cloud);
++    NSString *fallback = fallback_http_url(primary);
++    NSTimeInterval timeout = fallback ? 5.0 : 10.0;
++    BOOL transportErr = NO;
++    int r = http_store_once(payload, primary, timeout, &transportErr);
++    if (!r && transportErr && fallback) {
++        r = http_store_once(payload, fallback, 5.0, &transportErr);
++    }
++    if (!r && transportErr) fprintf(stderr, "[dm] [RED] save sync: HTTP save bridge unreachable while storing (%s)\n", cloud);
++    return r;
++}
++
++int dm_save_sync_remote_fetch(const char *cloud, const char *local) {
++    @autoreleasepool {
++        if (!cloud || !local) return -1;
++        if (!strncmp(cloud, "cloudkit://", 11)) return cloudkit_fetch(cloud, local);
++        if (!strncmp(cloud, "http://", 7) || !strncmp(cloud, "https://", 8)) return http_fetch(cloud, local);
++        return -1;
++    }
++}
++
++int dm_save_sync_remote_store(const char *local, const char *cloud) {
++    @autoreleasepool {
++        if (!local || !cloud) return 0;
++        if (!strncmp(cloud, "cloudkit://", 11)) return cloudkit_store(local, cloud);
++        if (!strncmp(cloud, "http://", 7) || !strncmp(cloud, "https://", 8)) return http_store(local, cloud);
++        return 0;
++    }
++}

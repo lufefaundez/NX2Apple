@@ -21,6 +21,7 @@ import NXModel
     let deviceStore: DeviceStore
     let appUpdates: AppUpdateStore
     let build: BuildStore
+    let saveBridge: SaveSyncBridge
     private var quitObserver: NSObjectProtocol?
 
     /// - Parameters:
@@ -73,6 +74,9 @@ import NXModel
         laterBuild.value = build
         self.repo = repo; self.engineSync = engineSync; self.dependencies = dependencies; self.deviceStore = devices
         self.appUpdates = updates; self.build = build
+        let bridge = SaveSyncBridge(defaults: defaults)
+        bridge.start()
+        self.saveBridge = bridge
 
         // The staged update goes in as the app quits, so the next launch is the new version without interrupting anyone.
         quitObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { [weak updates] _ in

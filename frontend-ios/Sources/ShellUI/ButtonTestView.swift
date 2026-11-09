@@ -297,11 +297,13 @@ struct XboxControllerDiagram: View {
             }
             .frame(width: Self.design.width * s, height: Self.design.height * s)
             .contentShape(Rectangle())
+            #if !os(tvOS)
             .onTapGesture(coordinateSpace: .local) { point in
                 // The nearest button to the touch, so the close face buttons each get the most room a finger can have.
                 guard let tap, let e = Self.nearest(to: CGPoint(x: point.x / s, y: point.y / s)) else { return }
                 tap(e)
             }
+            #endif
             .allowsHitTesting(tap != nil)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

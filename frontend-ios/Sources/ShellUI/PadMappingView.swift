@@ -250,7 +250,9 @@ struct PadMappingCard: View {
                 }
             }
             .formStyle(.grouped)
+            #if !os(tvOS)
             .scrollContentBackground(.hidden)
+            #endif
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top > 1
             } action: { _, scrolled in

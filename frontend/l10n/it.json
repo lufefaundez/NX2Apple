@@ -89,6 +89,8 @@
   "build.showLibrary": "Vedi gioco",
   "build.start": "Avvia la build",
   "build.startGame": "Compila gioco",
+  "build.tvos": "Apple TV",
+  "build.tvosNote": "Un’app sulla tua Apple TV 4K per tutti i tuoi giochi.",
   "builder.choose": "Scegli…",
   "builder.notFound": "Non trovato, scegli il programma nxb",
   "builder.note": "Più veloce, potrebbe non supportare ogni gioco e torna da solo al builder standard",

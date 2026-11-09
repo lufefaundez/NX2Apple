@@ -28,7 +28,11 @@ public struct GameDetailView: View {
     }
     @ViewBuilder private var contents: some View {
         if showsHeader || showsPrimaryAction {
+            #if os(tvOS)
+            header.listRowBackground(Color.clear)
+            #else
             header.listRowBackground(Color.clear).listRowSeparator(.hidden)
+            #endif
         }
         ForEach(detail.sections) { section in
             group(section.title) {
@@ -48,8 +52,10 @@ public struct GameDetailView: View {
             SourceRow(symbol: "folder",
                       title: detail.dataSource.isEmpty ? ShellStrings.text("No data selected") : detail.dataSource,
                       note: detail.dataNote) {
+                #if !os(tvOS)
                 GameSettingsGlassButton(title: ShellStrings.text("Choose…")) { actions.onPickGameData(detail.id) }.accessibilityLabel(ShellStrings.text("Choose game data…"))
                     .shellTarget("set.data") { actions.onPickGameData(detail.id) }
+                #endif
                 if !detail.dataSource.isEmpty && !detail.dataFromShell {
                     GameSettingsGlassButton(title: ShellStrings.text("Use app data")) { actions.onUseAppData(detail.id) }.shellTarget("set.appdata") { actions.onUseAppData(detail.id) }
                 }
@@ -68,7 +74,9 @@ public struct GameDetailView: View {
             SourceRow(symbol: detail.cloudSaves == nil ? "icloud.slash" : "icloud",
                       title: detail.cloudSaves ?? ShellStrings.text("Off"),
                       note: detail.cloudNote.isEmpty ? ShellStrings.text("Choose the same iCloud Drive folder you use on your Mac.") : detail.cloudNote) {
+                #if !os(tvOS)
                 GameSettingsGlassButton(title: ShellStrings.text("Choose folder…")) { actions.onPickCloudSaves(detail.id) }.shellTarget("set.cloud") { actions.onPickCloudSaves(detail.id) }
+                #endif
                 if detail.cloudCanUseShell {
                     GameSettingsGlassButton(title: ShellStrings.text("Use Settings folder")) { actions.onUseShellCloud(detail.id) }.shellTarget("set.cloud.shell") { actions.onUseShellCloud(detail.id) }
                 }

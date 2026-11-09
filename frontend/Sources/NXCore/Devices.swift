@@ -2,8 +2,8 @@ import Foundation
 
 /// An iPhone or iPad paired with this Mac (Xcode's `devicectl`), a target for installing a build directly.
 package struct AppleDevice: Identifiable, Equatable {
-    package init(id: String, name: String, model: String, os: String, reachable: Bool, transport: String = "") {
-    self.id = id; self.name = name; self.model = model; self.os = os; self.reachable = reachable; self.transport = transport
+    package init(id: String, name: String, model: String, os: String, reachable: Bool, transport: String = "", platform: String = "iOS") {
+    self.id = id; self.name = name; self.model = model; self.os = os; self.reachable = reachable; self.transport = transport; self.platform = platform
 }
     package let id: String          // the UDID
     package let name: String
@@ -11,7 +11,9 @@ package struct AppleDevice: Identifiable, Equatable {
     package let os: String
     package let reachable: Bool     // connected now, by cable or the local network
     package var transport = ""      // devicectl's connectionProperties.transportType: "wired" (cable), "localNetwork" (Wi-Fi), "" when not connected
+    package var platform = "iOS"    // "iOS" or "tvOS"
 
+    package var isTV: Bool { platform == "tvOS" || model.localizedCaseInsensitiveContains("Apple TV") }
     package var wired: Bool { transport == "wired" }
     package var overNetwork: Bool { transport == "localNetwork" }
 }
@@ -79,7 +81,8 @@ package enum DeviceTools {
             let software = new["software"] as? [String: Any] ?? [:]
             let state = new["state"] as? [String: Any] ?? [:]
             // A missing reality is physical: only a device that says "simulated" is left out.
-            guard hardware["reality"] as? String != "simulated", hardware["platform"] as? String == "iOS",
+            let plat = hardware["platform"] as? String ?? ""
+            guard hardware["reality"] as? String != "simulated", (plat == "iOS" || plat == "tvOS"),
                   connection["pairingState"] as? String == "paired",
                   let udid = hardware["udid"] as? String, !udid.isEmpty else { return nil }
             // osVersionNumber is a string in the old block and {"stringValue": "26.2.1", ...} in `software`.
@@ -90,7 +93,8 @@ package enum DeviceTools {
                                model: hardware["marketingName"] as? String ?? "",
                                os: os,
                                reachable: connection["transportType"] is String,
-                               transport: connection["transportType"] as? String ?? "")
+                               transport: connection["transportType"] as? String ?? "",
+                               platform: plat)
         }
         return devices.sorted { ($0.reachable ? 0 : 1, $0.name) < ($1.reachable ? 0 : 1, $1.name) }
     }

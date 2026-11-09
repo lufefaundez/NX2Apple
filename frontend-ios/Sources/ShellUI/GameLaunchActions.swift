@@ -28,9 +28,11 @@ struct GameLaunchActions: View {
         .padding(divisionInsets)
         .frame(maxWidth: .infinity, alignment: alignment)
         .onGeometryChange(for: EdgeInsets.self) { geometry in
+            #if !os(tvOS)
             if #available(iOS 27.1, macOS 27.1, *) {
                 return Self.insets(size: geometry.size, division: geometry.reservedRegions(kind: .division).first?.frame)
             }
+            #endif
             return EdgeInsets()
         } action: { divisionInsets = $0 }
     }

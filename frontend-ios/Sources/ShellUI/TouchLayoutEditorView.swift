@@ -90,7 +90,9 @@ struct TouchLayoutEditorView: View {
             }
 #endif
         }
+        #if !os(tvOS)
         .simultaneousGesture(TapGesture().onEnded { hintVisible = false; idleActivity &+= 1 })
+        #endif
         .task { try? Tips.configure([.displayFrequency(.immediate)]) }
         .accessibilityIdentifier("touchLayout.editor")
         .foregroundStyle(.white).preferredColorScheme(.dark)
@@ -154,11 +156,17 @@ struct TouchLayoutEditorView: View {
         .accessibilityLabel(ShellStrings.text("Touch controls options"))
         .accessibilityIdentifier("touchLayout.options")
         .shellTarget("lay.options") { hintVisible = false; optionsPresented = true }
+        #if os(tvOS)
+        .sheet(isPresented: $optionsPresented) {
+            optionsPopover.frame(width: 320)
+        }
+        #else
         .popover(isPresented: $optionsPresented, attachmentAnchor: .rect(.bounds)) {
             optionsPopover
                 .frame(width: 320)
                 .presentationCompactAdaptation(.popover)
         }
+        #endif
     }
 
     private var editorDoneButton: some View {
@@ -272,10 +280,14 @@ struct TouchLayoutEditorView: View {
         return GeometryReader { proxy in
             let k = proxy.size.width / screen.size.width
             ZStack(alignment: .topLeading) {
+                #if !os(tvOS)
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(selectionTapGesture(k: k))
                     .simultaneousGesture(dragGesture(k: k))
+                #else
+                Color.clear
+                #endif
                 Canvas { context, _ in
                     context.scaleBy(x: k, y: k)
                     drawBackdrop(g, in: &context)
@@ -358,7 +370,9 @@ struct TouchLayoutEditorView: View {
                     Image(systemName: "square.on.square.squareshape.controlhandles")
                         .foregroundStyle(model.together ? Color.black : Color.white)
                 }
+                #if !os(tvOS)
                 .toggleStyle(.button)
+                #endif
                 .buttonStyle(.glass)
                 .frame(width: 44, height: 44)
                 .tint(ShellPalette.cream)
@@ -464,6 +478,7 @@ struct TouchLayoutEditorView: View {
 
     // MARK: Touch
 
+    #if !os(tvOS)
     private func selectionTapGesture(k: CGFloat) -> some Gesture {
         SpatialTapGesture(coordinateSpace: .local)
             .onEnded { value in model.select(touchedControl(at: value.location, scale: k)) }
@@ -472,6 +487,7 @@ struct TouchLayoutEditorView: View {
     private func touchedControl(at point: CGPoint, scale k: CGFloat) -> TouchLayout.Control? {
         model.editing.control(at: CGPoint(x: point.x / k, y: point.y / k), slop: max(22 / k, 6))
     }
+    #endif
 
     static func canDrag(_ control: TouchLayout.Control, selected: TouchLayout.Control?, together: Bool) -> Bool {
         guard let selected else { return false }
@@ -481,6 +497,7 @@ struct TouchLayoutEditorView: View {
         return mover(control) == mover(selected)
     }
 
+    #if !os(tvOS)
     private func dragGesture(k: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
             .onChanged { value in
@@ -512,6 +529,7 @@ struct TouchLayoutEditorView: View {
                 }
             }
     }
+    #endif
 
     // MARK: VoiceOver and the controller
 

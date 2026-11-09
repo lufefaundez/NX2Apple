@@ -194,12 +194,20 @@ def _ensure_model_mod():
         class Qt:
             QueuedConnection = 1
 
+        class _QArg:
+            def __init__(self, val):
+                self.val = val
+
         class QMetaObject:
             @staticmethod
             def invokeMethod(obj, name: str, *_a) -> None:
                 fn = getattr(obj, name, None)
                 if callable(fn):
-                    fn()
+                    args = [a.val if isinstance(a, _QArg) else a for a in _a if not isinstance(a, int)]
+                    if args:
+                        fn(*args)
+                    else:
+                        fn()
 
         class QSettings:
             IniFormat = 1
@@ -220,7 +228,7 @@ def _ensure_model_mod():
         qt_core.QObject = QObject
         qt_core.Signal = Signal
         qt_core.Slot = Slot
-        qt_core.Q_ARG = lambda *_a: None
+        qt_core.Q_ARG = lambda _t, val=None: _QArg(val)
         qt_core.QThread = QThread
         qt_core.Qt = Qt
         qt_core.QMetaObject = QMetaObject

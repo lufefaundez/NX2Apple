@@ -1,0 +1,1947 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 16:05:00 -0300
+Subject: [PATCH] Add Apple TV 4K tvOS target support, A15 CPU flags, and save
+ bridge remote sync
+
+Upstream-Status: pending
+Reason: Apple TV 4K native tvOS target support, A15 Bionic CPU architecture flag, and tvOS gamepad integration
+Issue: LNPANDY/NX2Apple#731
+
+---
+ dm/gfx/tools/gl_shaders.py               |   6 +-
+ dm/gfx/tools/host_msl.py                 |   6 +-
+ dm/gfx/tools/own_compilers.py            |  25 +++-
+ dm/gfx/tools/pso_offline.py              |   4 +-
+ dm/gfx/tools/vk_shaders.py               |   8 +-
+ dm/host/Makefile                         |   5 +-
+ dm/host/haptics_apple.m                  |   6 +-
+ dm/host/memstat.m                        |   8 +-
+ dm/host/save_sync.c                      |  18 ++-
+ dm/host/save_sync.h                      |   4 +
+ dm/host/tests/Makefile                   |   4 +-
+ dm/host/tests/t_save_sync.c              |  92 ++++++++++++--
+ dm/host/web_apple.m                      |  15 +++
+ dm/ios/Shell/ShellApp.swift              |  17 ++-
+ dm/ios/Shell/ShellMain.m                 |  28 ++++-
+ dm/ios/Sources/CloudSaves.m              |  19 +++
+ dm/ios/Sources/DataBookmark.m            |   7 ++
+ dm/ios/Sources/DmGamepad.m               |  62 +++++++++-
+ dm/ios/Sources/DmHostingController.swift |   2 +
+ dm/ios/Sources/Launcher.swift            |   8 +-
+ dm/ios/Sources/LauncherRow.swift         |  13 ++
+ dm/ios/Sources/SaveSync.m                |   2 +
+ dm/ios/Sources/front_ios.m               |  75 ++++++++++--
+ dm/ios/Sources/main.m                    |  25 +++-
+ dm/ios/framework/ShellGlue.m             |   2 +
+ dm/ios/project-shell.yml                 |   2 +-
+ dm/ios/tools/build_ipa.sh                |  59 +++++++--
+ dm/ios/tools/build_shell.sh              |  67 ++++++++--
+ dm/ios/tools/gen_build.py                |  13 +-
+ dm/mac/pack_app.py                       |  10 +-
+ scripts/build_ipa_from_nsp.py            | 148 +++++++++++++----------
+ 31 files changed, 603 insertions(+), 157 deletions(-)
+
+diff --git a/dm/gfx/tools/gl_shaders.py b/dm/gfx/tools/gl_shaders.py
+index 0a87351..fc88db2 100644
+--- a/dm/gfx/tools/gl_shaders.py
++++ b/dm/gfx/tools/gl_shaders.py
+@@ -200,9 +200,10 @@ def metallib(msls, out, sdk, extra):
+ 
+ def main():
+     a = sys.argv[1:]
+-    ios = None
++    ios = tvos = None
+     if '--ios' in a: i = a.index('--ios'); ios = a[i + 1]; del a[i:i + 2]
+-    if len(a) < 2: sys.exit('usage: gl_shaders.py <input path>... <out dir> [--ios <dir>]')
++    if '--tvos' in a: i = a.index('--tvos'); tvos = a[i + 1]; del a[i:i + 2]
++    if len(a) < 2: sys.exit('usage: gl_shaders.py <input path>... <out dir> [--ios <dir>] [--tvos <dir>]')
+     roots, out = a[:-1], a[-1]
+     items, seen_src = [], set()
+     for s, st, where in sources(roots):
+@@ -224,6 +225,7 @@ def main():
+         tsv += [f'{k[0]}\t{v[0]}\t{" ".join(v[1])}\t{v[3]}' for k, v in sorted(seen.items())]
+         dirs = [(os.path.join(out, 'gl'), 'macosx', [])]
+         if ios: dirs.append((os.path.join(ios, 'gl'), 'iphoneos', ['-mios-version-min=18.0', '-fmetal-math-mode=relaxed']))   # relaxed as in vk_shaders.py and ios_metal.py: no NaN / Inf assumption on the iPhone's GPU compiler
++        if tvos: dirs.append((os.path.join(tvos, 'gl'), 'appletvos', ['-mtvos-version-min=18.0', '-fmetal-math-mode=relaxed']))
+         msls = [v[2] for v in seen.values()]
+         for d, sdk, extra in dirs:
+             lib = metallib(msls, d, sdk, extra)
+diff --git a/dm/gfx/tools/host_msl.py b/dm/gfx/tools/host_msl.py
+index 766f855..780cc77 100644
+--- a/dm/gfx/tools/host_msl.py
++++ b/dm/gfx/tools/host_msl.py
+@@ -10,8 +10,8 @@
+ import argparse, hashlib, os, subprocess, sys, tempfile
+ 
+ ap = argparse.ArgumentParser()
+-ap.add_argument('--sdk', required=True, choices=['macosx', 'iphoneos'])
+-ap.add_argument('--min', help='the lowest OS version the libraries must load on (iphoneos: the app\'s deployment target)')
++ap.add_argument('--sdk', required=True, choices=['macosx', 'iphoneos', 'appletvos'])
++ap.add_argument('--min', help='the lowest OS version the libraries must load on (iphoneos/appletvos: the app\'s deployment target)')
+ ap.add_argument('out')
+ ap.add_argument('sources', nargs='+')
+ a = ap.parse_args()
+@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory() as td:
+         lib = b''
+         if ver:
+             ml = os.path.join(td, name + '.metallib')
+-            cmd = ['xcrun', '-sdk', a.sdk, 'metal'] + ([f'-m{"ios" if a.sdk == "iphoneos" else "macosx"}-version-min={a.min}'] if a.min else []) + ['-o', ml, src]
++            cmd = ['xcrun', '-sdk', a.sdk, 'metal'] + ([f'-m{"ios" if a.sdk == "iphoneos" else "tvos" if a.sdk == "appletvos" else "macosx"}-version-min={a.min}'] if a.min else []) + ['-o', ml, src]
+             r = subprocess.run(cmd)
+             if r.returncode: sys.exit(f'host_msl.py: {src} does not compile ({" ".join(cmd)})')
+             lib = open(ml, 'rb').read()
+diff --git a/dm/gfx/tools/own_compilers.py b/dm/gfx/tools/own_compilers.py
+index 415bdd1..cb1b828 100644
+--- a/dm/gfx/tools/own_compilers.py
++++ b/dm/gfx/tools/own_compilers.py
+@@ -41,12 +41,13 @@ def other_metal_message(metal):
+             f'or set {ALLOW}=1 (the NSP script\'s --allow-other-metal) to build with this one anyway')
+ 
+ def other_metal():
+-    """The Metal compilers (macOS, iOS) that differ from the lock and are present: [(lock key, tested, actual)]; a missing one is dmsh_build.py's to report"""
++    """The Metal compilers (macOS, iOS/tvOS) that differ from the lock and are present: [(lock key, tested, actual)]; a missing one is dmsh_build.py's to report"""
+     with open(dmsh_chain.LOCK) as f: want = dict(l.rstrip('\n').split('\t', 1) for l in f if '\t' in l and not l.startswith('#'))
++    dev_sdk = 'appletvos' if os.environ.get('DM_SHADER_SDK') == 'appletvos' else 'iphoneos'
+     out = []
+-    for sdk in ('macosx', 'iphoneos'):
++    for sdk, lock_key in (('macosx', 'metal_macosx'), (dev_sdk, 'metal_iphoneos')):
+         now = metal_version(sdk)
+-        if now != 'missing' and now != want.get('metal_' + sdk): out.append(('metal_' + sdk, want.get('metal_' + sdk), now))
++        if now != 'missing' and now != want.get(lock_key): out.append(('metal_' + sdk, want.get(lock_key), now))
+     return out
+ 
+ METAL_V = re.compile(r'Apple metal version (\d+)\.(\d+) \(metalfe-\d+\.\d+\.(\d+)\)')   # the lock records 'Apple metal version 32023.921 (metalfe-32023.921.6)'
+@@ -83,11 +84,19 @@ def ios_target():   # as dmsh_build.py picks its targets: a Mac-only build (the
+     return 'ios' in (os.environ.get('DMSH_TARGETS') or ('mac,ios' if os.environ.get('IOSOUT') else 'mac')).split(',')
+ 
+ def check_tools():
++    tvos_mode = os.environ.get('DM_SHADER_SDK') == 'appletvos'
+     bad, own = [], []
+     for b in strict():
+         m = OWN.fullmatch(b)
+-        if m: own.append((m[1], m[2], m[3]))   # (lock key, tested, actual)
+-        elif not (b.startswith('metal_iphoneos: ') and b.endswith(' / actual missing') and not ios_target()): bad.append(b)   # a Mac without the iOS platform
++        if m:
++            if tvos_mode and m[1] == 'metal_iphoneos': continue
++            own.append((m[1], m[2], m[3]))   # (lock key, tested, actual)
++        elif not (b.startswith('metal_iphoneos: ') and b.endswith(' / actual missing') and (tvos_mode or not ios_target())): bad.append(b)   # a Mac without the iOS platform
++    if tvos_mode and ios_target():
++        with open(dmsh_chain.LOCK) as f: want = dict(l.rstrip('\n').split('\t', 1) for l in f if '\t' in l and not l.startswith('#'))
++        now = metal_version('appletvos')
++        if now == 'missing': bad.append(f'metal_appletvos: lock {want.get("metal_iphoneos")} / actual missing')
++        elif now != want.get('metal_iphoneos'): own.append(('metal_appletvos', want.get('metal_iphoneos'), now))
+     if bad: return bad
+     stopping, newer = newer_metal(own)
+     newer_note(newer)
+@@ -101,6 +110,12 @@ if __name__ == '__main__':
+         msg = check_metal()
+         if msg: print(msg)
+         sys.exit(1 if msg else 0)
++    if os.environ.get('DM_SHADER_SDK') == 'appletvos':
++        sys.path.insert(0, os.path.join(HERE, '../../ios/tools'))
++        import ios_metal
++        ios_metal.METAL = ['xcrun', '-sdk', 'appletvos', 'metal', '-c', '-O1', '-mtvos-version-min=18.0', '-fmetal-math-mode=relaxed', '-fpreserve-invariance']
++        ios_metal.METALLIB = ['xcrun', '-sdk', 'appletvos', 'metallib']
++        ios_metal.RECORD = ' '.join(ios_metal.METAL) + '; ' + ' '.join(ios_metal.METALLIB)
+     tool_lock.check_tools = check_tools   # dmsh_build.py imports the same module object and calls it through the module
+     sys.argv = [os.path.join(HERE, 'dmsh_build.py'), *sys.argv[1:]]
+     runpy.run_path(sys.argv[0], run_name='__main__')
+diff --git a/dm/gfx/tools/pso_offline.py b/dm/gfx/tools/pso_offline.py
+index 9d20f63..088f676 100644
+--- a/dm/gfx/tools/pso_offline.py
++++ b/dm/gfx/tools/pso_offline.py
+@@ -232,7 +232,7 @@ def archive_key(configuration, libraries, arch, platform, osmin, toolchain):
+ 
+ 
+ def sdk(platform):
+-    return 'iphoneos' if platform == 'ios' else 'macosx'
++    return 'iphoneos' if platform == 'ios' else 'appletvos' if platform == 'tvos' else 'macosx'
+ 
+ 
+ def tool_version(platform):
+@@ -349,7 +349,7 @@ def main(argv=None):
+     ap.add_argument('--work', required=True, help='the script, keys and logs')
+     ap.add_argument('--gpu', default='g18p', help='GPU architectures, comma-separated (default g18p)')
+     ap.add_argument('--depth', choices=('gl', 'zero'), help='the game\'s NVN depth mode (default: the profile\'s depth_mode, else gl: near = -w)')
+-    ap.add_argument('--platform', choices=('ios', 'macos'), default='ios')
++    ap.add_argument('--platform', choices=('ios', 'macos', 'tvos'), default='ios')
+     ap.add_argument('--os-min', help='minimum OS of the archives (default: iOS, the SDK\'s major version; macOS, this Mac\'s)')
+     ap.add_argument('--script-only', action='store_true', help='write the script and the stamp, run no metal-tt')
+     ap.add_argument('--batch-size', type=int, default=BATCH, help=f'compile sequential groups of at most N bases and merge with metal-pack, when there are more (default {BATCH}; 0: one compiler invocation)')
+diff --git a/dm/gfx/tools/vk_shaders.py b/dm/gfx/tools/vk_shaders.py
+index 18f18b9..2a68c92 100644
+--- a/dm/gfx/tools/vk_shaders.py
++++ b/dm/gfx/tools/vk_shaders.py
+@@ -159,9 +159,10 @@ def metallib(msls, out, sdk, extra):
+ 
+ def main():
+     a = sys.argv[1:]
+-    ios = None
++    ios = tvos = None
+     if '--ios' in a: i = a.index('--ios'); ios = a[i + 1]; del a[i:i + 2]
+-    if len(a) < 2: sys.exit('usage: vk_shaders.py <SPIR-V dir>... <out dir> [--ios <dir>]')
++    if '--tvos' in a: i = a.index('--tvos'); tvos = a[i + 1]; del a[i:i + 2]
++    if len(a) < 2: sys.exit('usage: vk_shaders.py <SPIR-V dir>... <out dir> [--ios <dir>] [--tvos <dir>]')
+     roots, out = a[:-1], a[-1]
+     files = [(p, r) for r in roots for p in spirv_files(r)]
+     if not files: red(f'no SPIR-V files in {" ".join(roots)}')
+@@ -179,9 +180,10 @@ def main():
+                '# spirv-cross ' + ' '.join((lambda r: r.stdout + r.stderr)(subprocess.run([SPIRV_CROSS, '--revision'], capture_output=True, text=True)).split())]
+         tsv += [f'{k}\t{v[0]}\t{" ".join(v[1])}\t{v[3]}' for k, v in sorted(seen.items())]
+         dirs = [(os.path.join(out, 'vk'), 'macosx', [])]
+-        # The iPhone library is compiled with -fmetal-math-mode=relaxed, as the NVN chain's (dm/ios/tools/ios_metal.py): the default fast mode lets the GPU compiler assume there is
++        # The iPhone / Apple TV library is compiled with -fmetal-math-mode=relaxed, as the NVN chain's (dm/ios/tools/ios_metal.py): the default fast mode lets the GPU compiler assume there is
+         # no NaN / Inf, which would let it drop the NaN handling of the precise:: functions above
+         if ios: dirs.append((os.path.join(ios, 'vk'), 'iphoneos', ['-mios-version-min=18.0', '-fmetal-math-mode=relaxed']))
++        if tvos: dirs.append((os.path.join(tvos, 'vk'), 'appletvos', ['-mtvos-version-min=18.0', '-fmetal-math-mode=relaxed']))
+         for d, sdk, extra in dirs:
+             lib = metallib(msls, d, sdk, extra)
+             open(os.path.join(d, 'vk_shaders.tsv'), 'w').write('\n'.join(tsv) + '\n')
+diff --git a/dm/host/Makefile b/dm/host/Makefile
+index 318fe34..a740163 100644
+--- a/dm/host/Makefile
++++ b/dm/host/Makefile
+@@ -20,7 +20,7 @@ GAME_H = gen/$(GAME)/game_profile.h
+ include ../mac/min_os.mk
+ CFLAGS=-O1 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
+ # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
+-SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m $(sort $(wildcard hle_*.c)) front_mac.m controllers_mac.m web_apple.m entry.S
++SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c save_sync_remote.m memstat.m haptics_apple.m $(sort $(wildcard hle_*.c)) front_mac.m controllers_mac.m web_apple.m entry.S
+ # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
+ # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
+ GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
+@@ -53,6 +53,7 @@ $(DAV1D_LIB): $(DAV1D_OBJ)
+ MSL_SDK ?= macosx
+ MSL_MIN_macosx = $(MACOS_MIN)
+ MSL_MIN_iphoneos = 26.0
++MSL_MIN_appletvos = 26.0
+ MSL_SRC = $(sort $(wildcard ../gfx/msl/*.metal))
+ MSL_H = gen/msl-$(MSL_SDK)/host_msl_gen.h
+ # Recheck the toolchain and target on every build; the generator keeps the header unchanged when its inputs match.
+@@ -80,7 +81,7 @@ endif
+ .PHONY: FORCE
+ FORCE:
+ dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h input_map.h input_preferences_mac.h pad_slots.h pad_map.h pad_motion.h steam_input.h controllers_mac.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h pad_joycon.h pad_joycon_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
+-	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
++	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework CloudKit -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+ clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx and dav1d builds; dmhost_* and *.dSYM beside them, as in .gitignore)
+ 	rm -rf gen dmhost dmhost_* *.dSYM
+ .PHONY: clean
+diff --git a/dm/host/haptics_apple.m b/dm/host/haptics_apple.m
+index 849af06..2dc5083 100644
+--- a/dm/host/haptics_apple.m
++++ b/dm/host/haptics_apple.m
+@@ -43,7 +43,7 @@ static GCHapticsLocality controllerLocalities[DM_PLAYERS];
+ static id outputOwners[DM_PLAYERS]; // protected by routeLock
+ static dm_haptics_output nativeOutputs[DM_PLAYERS]; // serial queue only
+ static uint64_t outputGeneration[DM_PLAYERS];
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_IOS
+ static BOOL phoneSupported;
+ #endif
+ static float gain = 1;
+@@ -399,7 +399,7 @@ static void configure(int p, GCController *controller, GCHapticsLocality localit
+         fprintf(stderr, "haptics: player %d controller %s, localities %s, %lu channels\n", p + 1,
+                 controller.vendorName.UTF8String ?: "unknown", [[localities.allObjects sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "].UTF8String ?: "none", (unsigned long)channels[p].count);
+     }
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_IOS
+     else if (!p && phoneSupported) {
+         // Do not initialize the phone's engine before the game's audio session is active.
+         add_engine(p, -1, @"phone", ^CHHapticEngine *(NSError **e) { return [[CHHapticEngine alloc] initWithAudioSession:AVAudioSession.sharedInstance error:e]; });
+@@ -462,7 +462,7 @@ void dm_haptics_apple_init(void) {
+         if (e) { float v = strtof(e, NULL); if (isfinite(v)) rumble_min = fmaxf(0, fminf(0.9f, v)); }
+         e = getenv("DM_RUMBLE");
+         dm_haptics_init(apply, !e || atoi(e) != 0);
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_IOS
+         phoneSupported = CHHapticEngine.capabilitiesForHardware.supportsHaptics;
+ #endif
+         dispatch_sync(queue, ^{ configure(0, nil, nil); });
+diff --git a/dm/host/memstat.m b/dm/host/memstat.m
+index b2e4f28..8ca3dbf 100644
+--- a/dm/host/memstat.m
++++ b/dm/host/memstat.m
+@@ -106,7 +106,9 @@ __attribute__((constructor)) static void memstat_start(void) {
+     const char *p = getenv("DM_MEMSTAT");
+     if (!p || !*p) return;
+     char *path = strdup(p);
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_TV
++    if (*p != '/') { size_t n = strlen(getenv("HOME")) + strlen(p) + 24; path = malloc(n); snprintf(path, n, "%s/Library/Caches/%s", getenv("HOME"), p); }
++#elif TARGET_OS_IPHONE
+     if (*p != '/') { size_t n = strlen(getenv("HOME")) + strlen(p) + 16; path = malloc(n); snprintf(path, n, "%s/Documents/%s", getenv("HOME"), p); }   // Relative name → the container's Documents (the container path is not known before launch)
+ #endif
+     pthread_t th; pthread_create(&th, NULL, memstat_thread, path); pthread_detach(th);
+@@ -148,7 +150,9 @@ __attribute__((constructor)) static void thrcpu_start(void) {
+     const char *p = getenv("DM_THRCPU");
+     if (!p || !*p) return;
+     char *spec = strdup(p);
+-#if TARGET_OS_IPHONE
++#if TARGET_OS_TV
++    if (*p != '/') { size_t n = strlen(getenv("HOME")) + strlen(p) + 24; spec = malloc(n); snprintf(spec, n, "%s/Library/Caches/%s", getenv("HOME"), p); }
++#elif TARGET_OS_IPHONE
+     if (*p != '/') { size_t n = strlen(getenv("HOME")) + strlen(p) + 16; spec = malloc(n); snprintf(spec, n, "%s/Documents/%s", getenv("HOME"), p); }
+ #endif
+     pthread_t th; pthread_create(&th, NULL, thrcpu_thread, spec); pthread_detach(th);
+diff --git a/dm/host/save_sync.c b/dm/host/save_sync.c
+index 9e46d9f..1df8779 100644
+--- a/dm/host/save_sync.c
++++ b/dm/host/save_sync.c
+@@ -327,6 +327,10 @@ static int backup_dir(const char *save, const char *side, char *out, size_t n) {
+     return 0;
+ }
+ 
++static int is_remote_url(const char *s) {
++    return s && (!strncmp(s, "cloudkit://", 11) || !strncmp(s, "http://", 7) || !strncmp(s, "https://", 8));
++}
++
+ // DM_SAVE_SYNC → <folder>/<title ID>/save.dmsync; 0 when sync is off
+ static int cloud_file(const char *title, char *out, size_t n) {
+     const char *v = getenv("DM_SAVE_SYNC"); char dir[PATH_MAX], id[24];
+@@ -349,6 +353,7 @@ static int cloud_file(const char *title, char *out, size_t n) {
+     size_t L = strlen(dir); while (L > 1 && dir[L - 1] == '/') dir[--L] = 0;
+     upper_title(title, id, sizeof id);
+     if (!*id || strchr(id, '/')) return 0;
++    if (is_remote_url(dir)) return snprintf(out, n, "%s/%s/save.dmsync", dir, id) < (int)n;
+     // The game's own folder chosen instead of the one above it (a picker shows <folder>/<title ID> once another device has synced): taken as it is, not given a second <title ID>
+     const char *last = strrchr(dir, '/');
+     if (!strcasecmp(last ? last + 1 : dir, id)) return snprintf(out, n, "%s/save.dmsync", dir) < (int)n;
+@@ -433,8 +438,11 @@ static int send_save(const char *save, const char *title, const char *cloud) {
+         when(other.saved, t, sizeof t);
+         SLOG("the cloud's save (from %s, saved %s) changed since this device's last sync; this device's newer one replaces it, and it is kept in %s", other.device, t, kept);
+     }
+-    snprintf(dir, sizeof dir, "%s", cloud); *strrchr(dir, '/') = 0;
+-    if (mkdirs(dir) || front_save_sync_store(packed, cloud) != 1) { SRED("sending to %s failed (errno=%d)", cloud, errno); goto done; }
++    if (!is_remote_url(cloud)) {
++        snprintf(dir, sizeof dir, "%s", cloud); *strrchr(dir, '/') = 0;
++        if (mkdirs(dir)) { SRED("sending to %s failed (errno=%d)", cloud, errno); goto done; }
++    }
++    if (front_save_sync_store(packed, cloud) != 1) { SRED("sending to %s failed (errno=%d)", cloud, errno); goto done; }
+     write_base(save, mine.hash); ok = 1;
+     when(mine.saved, t, sizeof t);
+     SLOG("sent: %d files, saved %s, to %s", mine.files, t, cloud);
+@@ -542,7 +550,12 @@ int save_sync_after_exit(const char *save, const char *title) {   // save: DM_SA
+ }
+ 
+ // ---------- the platform's parts: these defaults are plain file copies, which the Mac's iCloud Drive takes (it downloads a file a read asks for) ----------
++__attribute__((weak)) int dm_save_sync_remote_is_url(const char *cloud) { return is_remote_url(cloud); }
++__attribute__((weak)) int dm_save_sync_remote_fetch(const char *cloud, const char *local) { (void)cloud; (void)local; return -1; }
++__attribute__((weak)) int dm_save_sync_remote_store(const char *local, const char *cloud) { (void)local; (void)cloud; return 0; }
++
+ __attribute__((weak)) int front_save_sync_fetch(const char *cloud, const char *local) {
++    if (is_remote_url(cloud)) return dm_save_sync_remote_fetch(cloud, local);
+     int in = open(cloud, O_RDONLY); if (in < 0) return errno == ENOENT ? 0 : -1;
+     int out = open(local, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (out < 0) { close(in); return -1; }
+     int r = copy_fd(in, out); close(in);
+@@ -553,6 +566,7 @@ __attribute__((weak)) int front_save_sync_fetch(const char *cloud, const char *l
+ 
+ // Written beside the cloud file under a .nosync name (iCloud Drive does not upload those) and renamed over it: iCloud sees one whole new file
+ __attribute__((weak)) int front_save_sync_store(const char *local, const char *cloud) {
++    if (is_remote_url(cloud)) return dm_save_sync_remote_store(local, cloud);
+     char part[PATH_MAX]; snprintf(part, sizeof part, "%s.%d.nosync", cloud, (int)getpid());
+     int in = open(local, O_RDONLY); if (in < 0) return 0;
+     int out = open(part, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (out < 0) { close(in); return 0; }
+diff --git a/dm/host/save_sync.h b/dm/host/save_sync.h
+index f05c367..f7e94b0 100644
+--- a/dm/host/save_sync.h
++++ b/dm/host/save_sync.h
+@@ -45,3 +45,7 @@ int front_save_sync_fetch(const char *cloud, const char *local);
+ int front_save_sync_store(const char *local, const char *cloud);
+ // Clones the committed save folder `dir` to `to` while no Commit can swap it (hle_fs.c takes its lock; the default, with no host running, does not need one). 0 on success
+ int dm_fs_clone_committed(const char *dir, const char *to);
++// Remote transports (save_sync_remote.m: cloudkit:// and http(s):// save bridge; weak stubs in save_sync.c keep pure-C tests dependency-free)
++int dm_save_sync_remote_is_url(const char *cloud);
++int dm_save_sync_remote_fetch(const char *cloud, const char *local);
++int dm_save_sync_remote_store(const char *local, const char *cloud);
+diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
+index 026abd9..e3e3921 100644
+--- a/dm/host/tests/Makefile
++++ b/dm/host/tests/Makefile
+@@ -153,8 +153,8 @@ fs-tsan: $(B)/t_fs_commit_list_tsan
+ $(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+ 	$(CLANG) -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
+ run: $(B)/t_save_sync $(B)/t_save_sync_metadata
+-$(B)/t_save_sync: t_save_sync.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
+-	$(CLANG) -O1 -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_save_sync.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../hle_profile.c
++$(B)/t_save_sync: t_save_sync.c t_fs_stub.c ../hle_fs.c ../save_sync.c ../save_sync_remote.m ../save_sync.h ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) ../hle_profile.c ../hle_profile.h | $(B)
++	$(CLANG) -O1 -fobjc-arc -Wall -Wno-unused-function -I.. $(GINC) -o $@ t_save_sync.c t_fs_stub.c ../hle_bigstack.c ../save_sync.c ../save_sync_remote.m ../hle_profile.c -framework Foundation -framework CloudKit
+ $(B)/t_save_sync_metadata: t_save_sync_metadata.c ../save_sync.c ../save_sync.h | $(B)
+ 	$(CLANG) -O1 -Wall -Wno-unused-function -I.. -o $@ t_save_sync_metadata.c
+ .PHONY: save-sync
+diff --git a/dm/host/tests/t_save_sync.c b/dm/host/tests/t_save_sync.c
+index 001a88e..1da362e 100644
+--- a/dm/host/tests/t_save_sync.c
++++ b/dm/host/tests/t_save_sync.c
+@@ -13,7 +13,11 @@
+ //   (9) a new backup removes the oldest of its side beyond 10, and leaves the other side's and the player's own folders
+ //   (10) the launcher's DM_SAVE with a trailing slash: the same <save>.sync as the host's
+ #include "../hle_fs.c"
++#include <arpa/inet.h>
+ #include <ctype.h>
++#include <netinet/in.h>
++#include <signal.h>
++#include <sys/socket.h>
+ #include <sys/wait.h>
+ #include <sys/time.h>
+ 
+@@ -56,23 +60,33 @@ static Result write_save(const char *path, const char *s) {           // create
+     r = h_fs_WriteFile(h, 0, s, strlen(s), NULL); h_fs_CloseFile(h); return r;
+ }
+ 
++static const char *g_self;
++
+ // One start of the game on a device: the save mount (the cloud's save comes in), then, with a file, the game writing it and committing, then a flush (the iPhone app
+ // going to the background). cloud NULL: sync off. Returns the child's failed steps
++static int run_session(const char *save, const char *cloud, const char *file, const char *value) {
++    setenv("DM_SAVE", save, 1);
++    if (cloud && *cloud) setenv("DM_SAVE_SYNC", cloud, 1); else unsetenv("DM_SAVE_SYNC");
++    int bad = h_fs_MountSave("save", NULL) != RES_OK;
++    if (file && *file) { char gp[256]; snprintf(gp, sizeof gp, "save:/%s", file); bad += write_save(gp, value) != RES_OK; bad += h_fs_Commit("save") != RES_OK; }
++    if (cloud && *cloud) bad += save_sync_flush(10000) != 1;
++    fflush(stdout); fflush(stderr);
++    return bad;
++}
++
+ static int session(const char *save, const char *cloud, const char *file, const char *value) {
+     fflush(stdout); fflush(stderr);
+     pid_t p = fork();
+     if (!p) {
+-        setenv("DM_SAVE", save, 1);
+-        if (cloud) setenv("DM_SAVE_SYNC", cloud, 1); else unsetenv("DM_SAVE_SYNC");
+-        int bad = h_fs_MountSave("save", NULL) != RES_OK;
+-        if (file) { char gp[256]; snprintf(gp, sizeof gp, "save:/%s", file); bad += write_save(gp, value) != RES_OK; bad += h_fs_Commit("save") != RES_OK; }
+-        if (cloud) bad += save_sync_flush(10000) != 1;
+-        fflush(stdout); fflush(stderr); _exit(bad);
++        execl(g_self, g_self, "--session", save, cloud ? cloud : "", file ? file : "", value ? value : "", (char *)NULL);
++        _exit(98);
+     }
+     int st; waitpid(p, &st, 0); return WIFEXITED(st) ? WEXITSTATUS(st) : 99;
+ }
+ 
+-int main(void) {
++int main(int argc, char **argv) {
++    g_self = argv[0];
++    if (argc == 6 && !strcmp(argv[1], "--session")) return run_session(argv[2], argv[3], argv[4], argv[5]);
+     char root[1024]; const char *sp = getenv("TMPDIR"); snprintf(root, sizeof root, "%s/t_save_sync.XXXXXX", sp ? sp : "/private/tmp");
+     if (!mkdtemp(root)) { perror("mkdtemp"); return 1; }
+     char p[1400], q[1400], u[1400], bundle[1400];
+@@ -217,6 +231,70 @@ int main(void) {
+     snprintf(p, sizeof p, "%s/.sync", C); CHECK(!exists(p), "and the sync state is beside the save, not inside it");
+     unsetenv("DM_SAVE_SYNC");
+ 
++    printf("(11) HTTP save bridge with Bearer token and fallback URL\n");
++    int lfd = socket(AF_INET, SOCK_STREAM, 0);
++    int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
++    struct sockaddr_in sa = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
++    bind(lfd, (struct sockaddr *)&sa, sizeof sa); listen(lfd, 8);
++    socklen_t slen = sizeof sa; getsockname(lfd, (struct sockaddr *)&sa, &slen);
++    int port = ntohs(sa.sin_port);
++    char bfile[1300]; snprintf(bfile, sizeof bfile, "%s/bridge_save.dmsync", root);
++    pid_t srv = fork();
++    if (!srv) {
++        for (;;) {
++            int cfd = accept(lfd, NULL, NULL); if (cfd < 0) break;
++            char req[8192]; ssize_t n = 0, r;
++            while (n < (ssize_t)sizeof req - 1 && (r = read(cfd, req + n, sizeof req - 1 - n)) > 0) {
++                n += r; req[n] = 0; if (strstr(req, "\r\n\r\n")) break;
++            }
++            req[n] = 0;
++            char *hdr_end = strstr(req, "\r\n\r\n");
++            if (!hdr_end || !strcasestr(req, "Authorization: Bearer secret-bridge-tok\r\n")) {
++                const char *unauth = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
++                write(cfd, unauth, strlen(unauth)); close(cfd); continue;
++            }
++            if (!strncmp(req, "GET ", 4)) {
++                FILE *bf = fopen(bfile, "rb");
++                if (!bf) {
++                    const char *nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
++                    write(cfd, nf, strlen(nf));
++                } else {
++                    fseek(bf, 0, SEEK_END); long sz = ftell(bf); fseek(bf, 0, SEEK_SET);
++                    char *buf = malloc((size_t)sz); fread(buf, 1, (size_t)sz, bf); fclose(bf);
++                    char hh[160]; int hl = snprintf(hh, sizeof hh, "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\nConnection: close\r\n\r\n", sz);
++                    write(cfd, hh, (size_t)hl); write(cfd, buf, (size_t)sz); free(buf);
++                }
++            } else if (!strncmp(req, "PUT ", 4)) {
++                long cl = 0; char *clp = strcasestr(req, "Content-Length:");
++                if (clp) cl = strtol(clp + 15, NULL, 10);
++                size_t have = (size_t)(n - (hdr_end + 4 - req));
++                char *body = malloc((size_t)cl);
++                if (have > 0) memcpy(body, hdr_end + 4, have > (size_t)cl ? (size_t)cl : have);
++                while (have < (size_t)cl && (r = read(cfd, body + have, (size_t)cl - have)) > 0) have += (size_t)r;
++                FILE *bf = fopen(bfile, "wb"); fwrite(body, 1, have, bf); fclose(bf); free(body);
++                const char *ok = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
++                write(cfd, ok, strlen(ok));
++            }
++            close(cfd);
++        }
++        _exit(0);
++    }
++    char burl[256], deadurl[256], tvA[1200], tvB[1200];
++    snprintf(burl, sizeof burl, "http://127.0.0.1:%d/saves", port);
++    snprintf(deadurl, sizeof deadurl, "http://127.0.0.1:1/saves");
++    snprintf(tvA, sizeof tvA, "%s/tvA/save", root); mkd(tvA);
++    snprintf(tvB, sizeof tvB, "%s/tvB/save", root); mkd(tvB);
++    setenv("DM_SAVE_SYNC_TOKEN", "wrong-tok", 1);
++    snprintf(p, sizeof p, "%s/game.dat", tvA); put(p, "tv1");
++    CHECK(session(tvA, burl, "game.dat", "tv1") > 0 && !exists(bfile), "wrong Bearer token is rejected by HTTP bridge");
++    setenv("DM_SAVE_SYNC_TOKEN", "secret-bridge-tok", 1);
++    CHECK(session(tvA, burl, "game.dat", "tv2") == 0 && cloud_has(bfile, root, "game.dat", "tv2"), "Apple TV pushes save over HTTP bridge with Bearer token");
++    setenv("DM_SAVE_SYNC_FALLBACK", burl, 1);
++    snprintf(p, sizeof p, "%s/game.dat", tvB);
++    CHECK(session(tvB, deadurl, NULL, NULL) == 0 && same(p, "tv2"), "unreachable primary URL falls back to DM_SAVE_SYNC_FALLBACK and pulls save");
++    unsetenv("DM_SAVE_SYNC_TOKEN"); unsetenv("DM_SAVE_SYNC_FALLBACK");
++    kill(srv, SIGTERM); close(lfd); waitpid(srv, NULL, 0);
++
+     printf("== save sync: %d checks, %d failed ==\n", checks, fails);
+     if (!fails) { char c[1200]; snprintf(c, sizeof c, "rm -rf '%s'", root); system(c); }
+     return fails != 0;
+diff --git a/dm/host/web_apple.m b/dm/host/web_apple.m
+index ba25f68..85ba613 100644
+--- a/dm/host/web_apple.m
++++ b/dm/host/web_apple.m
+@@ -9,6 +9,20 @@
+ // only once released. A click or touch on the page focuses what it lands on and presses A there. The page is transparent where it draws nothing, over the game's picture; its
+ // 1280x720 is fitted to the game's 16:9 picture. Its sounds follow the host's audio (DM_AUDIO; silent on the Mac by default)
+ #include <TargetConditionals.h>
++#if TARGET_OS_TV
++#include <stddef.h>
++#include "front.h"
++int front_web_open(const char *doc_dir, const char *page, const char *query, const char *callback_prefix, void (*on_msg)(const char *, size_t), void (*on_end)(int)) {
++    (void)doc_dir; (void)page; (void)query; (void)callback_prefix; (void)on_msg;
++    if (on_end) on_end(1);
++    return 0;
++}
++void front_web_show(void) {}
++void front_web_send(const char *msg, size_t n) { (void)msg; (void)n; }
++void front_web_shot(const char *path) { (void)path; }
++void front_web_close(void) {}
++int front_web_touch(void) { return 0; }
++#else
+ #if TARGET_OS_IPHONE
+ #import <UIKit/UIKit.h>
+ typedef UIView DmView;
+@@ -409,3 +423,4 @@ void front_web_shot(const char *path) {
+ #endif
+ }
+ void front_web_close(void) { dispatch_async(dispatch_get_main_queue(), ^{ if (g_box) { [g_box close]; g_box = nil; } }); }
++#endif
+diff --git a/dm/ios/Shell/ShellApp.swift b/dm/ios/Shell/ShellApp.swift
+index 8dbe45f..b98c9a3 100644
+--- a/dm/ios/Shell/ShellApp.swift
++++ b/dm/ios/Shell/ShellApp.swift
+@@ -18,8 +18,7 @@ struct EngineGameLauncher: GameLauncher {
+     }
+ 
+     @MainActor func launch(_ game: LaunchableGame) async throws {
+-        let fm = FileManager.default
+-        let documents = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
++        let documents = ShellHostConfig.defaultAppDataRoot().deletingLastPathComponent()
+         let envFile = try? String(contentsOf: documents.appendingPathComponent("env.txt"), encoding: .utf8)
+         let plan = EngineLaunchPlan.make(game: game, appResources: Bundle.main.resourceURL ?? Bundle.main.bundleURL, documents: documents, envFileText: envFile)
+         try plan.createFolders()
+@@ -51,10 +50,22 @@ private func withCStrings<R>(_ strings: [String], _ body: (UnsafePointer<UnsafeP
+         // The shader chain the host was compiled with (build_shell.sh writes DMChain): a framework built for another one needs an app update
+         let chain = (info["DMChain"] as? String).map { "b-" + $0 }
+         let frameworks = Bundle.main.privateFrameworksURL ?? Bundle.main.bundleURL.appendingPathComponent("Frameworks", isDirectory: true)
++        let nonEmpty = { (key: String) -> String? in
++            guard let s = info[key] as? String, !s.isEmpty else { return nil }
++            return s
++        }
+         let config = ShellHostConfig(gamesRoot: frameworks, appDataRoot: ShellHostConfig.defaultAppDataRoot(),
+                                      environment: HostEnvironment(chain: chain),
+-                                     updateURL: URL(string: "https://github.com/LNPANDY/NX2Apple/releases"))
++                                     updateURL: URL(string: "https://github.com/lufefaundez/NX2Apple/releases"),
++                                     cloudKitContainer: nonEmpty("DMCloudKitContainer"),
++                                     saveBridgeURL: nonEmpty("DMSaveBridgeURL"),
++                                     saveBridgeFallbackURL: nonEmpty("DMSaveBridgeFallbackURL"),
++                                     saveBridgeToken: nonEmpty("DMSaveBridgeToken"))
++        #if os(tvOS)
++        let model = ShellHostModel(config: config, launcher: EngineGameLauncher(), picker: NoFolderPicker())
++        #else
+         let model = ShellHostModel(config: config, launcher: EngineGameLauncher(), picker: DocumentFolderPicker())
++        #endif
+         model.startControllers()
+         for entry in model.entries {
+             fputs("shell: game \(entry.id) \(entry.title) at \(entry.frameworkURL?.lastPathComponent ?? "-")\(entry.problem.map { ", broken: \($0.reason), \($0.detail)" } ?? "")\n", stderr)
+diff --git a/dm/ios/Shell/ShellMain.m b/dm/ios/Shell/ShellMain.m
+index 7fb0bfc..9e344a3 100644
+--- a/dm/ios/Shell/ShellMain.m
++++ b/dm/ios/Shell/ShellMain.m
+@@ -18,7 +18,13 @@ static dm_glue_present_fn g_present;
+ static dm_glue_focus_fn g_focus;
+ static int g_boot_ok;
+ 
+-static NSString *documents(void) { return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0]; }
++static NSString *documents(void) {
++#if TARGET_OS_TV
++    return NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES)[0];
++#else
++    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++#endif
++}
+ 
+ // One log file per run, the previous one kept beside it (<name>.prev.txt): the shell's own lines go to Documents/shell-log.txt until a
+ // game starts, the game's (the host's stderr) to Documents/log.txt, the file the per-game app writes and the issue forms ask for.
+@@ -94,15 +100,19 @@ void dm_shell_present_game(void) {
+ 
+ @interface App : UIResponder <UIApplicationDelegate>
+ @end
++#if !TARGET_OS_TV
+ // Browsing may be portrait; phone gameplay stays landscape. UIKit manages unrestricted rotation on the Duo inner display.
+ static UIInterfaceOrientationMask shell_orientations(UITraitCollection *traits) {
+     if (traits.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return UIInterfaceOrientationMaskAll;
+     return g_boot_ok ? UIInterfaceOrientationMaskLandscape : UIInterfaceOrientationMaskAllButUpsideDown;
+ }
++#endif
+ @implementation App
++#if !TARGET_OS_TV
+ - (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+     return shell_orientations(window.traitCollection);   // iOS 26
+ }
++#endif
+ - (UISceneConfiguration *)application:(UIApplication *)a configurationForConnectingSceneSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
+     return [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:s.role];
+ }
+@@ -112,9 +122,11 @@ static UIInterfaceOrientationMask shell_orientations(UITraitCollection *traits)
+ @property (strong, nonatomic) UIWindow *window;
+ @end
+ @implementation SceneDelegate
++#if !TARGET_OS_TV
+ - (UIInterfaceOrientationMask)supportedInterfaceOrientationsForWindowScene:(UIWindowScene *)windowScene {
+     return shell_orientations(windowScene.traitCollection);   // iOS 27 and later
+ }
++#endif
+ - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
+     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+     self.window.rootViewController = [ShellLibrary makeController];
+@@ -145,10 +157,22 @@ int main(int argc, char **argv) {
+     @autoreleasepool {
+         log_to([documents() stringByAppendingPathComponent:@"shell-log.txt"]);
+         NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+-        fprintf(stderr, "shell: %s %s, commit %s, shader chain %s, iOS %s\n", [info[@"CFBundleIdentifier"] UTF8String], [info[@"CFBundleShortVersionString"] UTF8String] ?: "?",
+-                [info[@"DMCommit"] UTF8String] ?: "not recorded", [info[@"DMChain"] UTF8String] ?: "?", UIDevice.currentDevice.systemVersion.UTF8String);
++#if TARGET_OS_TV
++        const char *os_name = "tvOS";
++#else
++        const char *os_name = "iOS";
++#endif
++        fprintf(stderr, "shell: %s %s, commit %s, shader chain %s, %s %s\n", [info[@"CFBundleIdentifier"] UTF8String], [info[@"CFBundleShortVersionString"] UTF8String] ?: "?",
++                [info[@"DMCommit"] UTF8String] ?: "not recorded", [info[@"DMChain"] UTF8String] ?: "?", os_name, UIDevice.currentDevice.systemVersion.UTF8String);
+         // Free space where the game data goes: the Mac launcher reads this line before it copies a game's data (many GB)
+-        NSNumber *avail = [[NSURL fileURLWithPath:documents()] resourceValuesForKeys:@[NSURLVolumeAvailableCapacityForImportantUsageKey] error:nil][NSURLVolumeAvailableCapacityForImportantUsageKey];
++        NSURL *docURL = [NSURL fileURLWithPath:documents()];
++#if TARGET_OS_TV
++        NSNumber *avail = [docURL resourceValuesForKeys:@[NSURLVolumeAvailableCapacityKey] error:nil][NSURLVolumeAvailableCapacityKey];
++#else
++        NSNumber *avail = [docURL resourceValuesForKeys:@[NSURLVolumeAvailableCapacityForImportantUsageKey] error:nil][NSURLVolumeAvailableCapacityForImportantUsageKey];
++        if (!avail) avail = [docURL resourceValuesForKeys:@[NSURLVolumeAvailableCapacityKey] error:nil][NSURLVolumeAvailableCapacityKey];
++#endif
++        if (!avail) avail = [NSFileManager.defaultManager attributesOfFileSystemForPath:documents() error:nil][NSFileSystemFreeSize];
+         fprintf(stderr, "shell: free space %lld bytes\n", avail ? avail.longLongValue : -1LL);
+         for (NSString *fw in [NSFileManager.defaultManager contentsOfDirectoryAtPath:NSBundle.mainBundle.privateFrameworksPath error:nil])
+             fprintf(stderr, "shell: framework %s\n", fw.UTF8String);
+diff --git a/dm/ios/Sources/CloudSaves.m b/dm/ios/Sources/CloudSaves.m
+index ae4edc0..fbd4479 100644
+--- a/dm/ios/Sources/CloudSaves.m
++++ b/dm/ios/Sources/CloudSaves.m
+@@ -2,6 +2,24 @@
+ 
+ #import "CloudSaves.h"
+ 
++#if TARGET_OS_TV
++NSString *dm_cloud_saves_path(BOOL *stale) { if (stale) *stale = NO; return nil; }
++BOOL dm_store_cloud_saves(NSURL *url) { (void)url; return NO; }
++void dm_clear_cloud_saves(void) {}
++void dm_cloud_saves_env(void) {
++    if (getenv("DM_SAVE_SYNC")) return;
++    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
++    NSString *ck = info[@"DMCloudKitContainer"], *bridge = info[@"DMSaveBridgeURL"], *fb = info[@"DMSaveBridgeFallbackURL"], *tok = info[@"DMSaveBridgeToken"];
++    if (tok.length && !getenv("DM_SAVE_SYNC_TOKEN")) setenv("DM_SAVE_SYNC_TOKEN", tok.UTF8String, 1);
++    if (ck.length) {
++        setenv("DM_SAVE_SYNC", [NSString stringWithFormat:@"cloudkit://%@", ck].UTF8String, 1);
++        if (bridge.length && !getenv("DM_SAVE_SYNC_FALLBACK")) setenv("DM_SAVE_SYNC_FALLBACK", bridge.UTF8String, 1);
++    } else if (bridge.length) {
++        setenv("DM_SAVE_SYNC", bridge.UTF8String, 1);
++        if (fb.length && !getenv("DM_SAVE_SYNC_FALLBACK")) setenv("DM_SAVE_SYNC_FALLBACK", fb.UTF8String, 1);
++    }
++}
++#else
+ static NSString *const kCloudSaves = @"cloudSavesBookmark";
+ 
+ // The folder's security scope, held from the first resolve on: the host writes there after every
+@@ -75,3 +93,4 @@ void dm_cloud_saves_env(void) {
+         fprintf(stderr, "boot: cloud saves through %s\n", folder.fileSystemRepresentation);
+     } else if (fromPick) { unsetenv("DM_SAVE_SYNC"); fromPick = NO; }
+ }
++#endif
+diff --git a/dm/ios/Sources/DataBookmark.m b/dm/ios/Sources/DataBookmark.m
+index 3dcc383..9d3e8c4 100644
+--- a/dm/ios/Sources/DataBookmark.m
++++ b/dm/ios/Sources/DataBookmark.m
+@@ -2,6 +2,12 @@
+ 
+ #import "DataBookmark.h"
+ 
++#if TARGET_OS_TV
++NSData *dm_picked_data_bookmark(void) { return nil; }
++NSString *dm_picked_data_path(BOOL *stale) { if (stale) *stale = NO; return nil; }
++BOOL dm_store_picked_data(NSURL *url) { (void)url; return NO; }
++void dm_clear_picked_data(void) {}
++#else
+ static NSString *const kPickedData = @"pickedDataBookmark";
+ 
+ // The one security scope the game data lives under, held from the first resolve on: the host reads
+@@ -77,3 +83,4 @@ BOOL dm_store_picked_data(NSURL *url) {
+ void dm_clear_picked_data(void) {
+     [NSUserDefaults.standardUserDefaults removeObjectForKey:kPickedData];
+ }
++#endif
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index ca91b77..c740b6e 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -20,7 +20,9 @@
+ //   Shaking the phone shakes the controller (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c), whichever controls are in use; see "Shaking the phone" below.
+ #import <UIKit/UIKit.h>
+ #import <GameController/GameController.h>
++#if !TARGET_OS_TV
+ #import <CoreMotion/CoreMotion.h>
++#endif
+ #import <CoreText/CoreText.h>
+ #include <pthread.h>
+ #include "dm.h"
+@@ -51,6 +53,10 @@ static void publish(void) {   // the touch gamepad and the shake; the host ORs t
+     pthread_mutex_unlock(&g_mu);
+ }
+ 
++#if TARGET_OS_TV
++static void motion_start(void) {}
++static void phone_motion_start(UIView *body) { (void)body; }
++#else
+ // ---- Shaking the phone ----
+ // The accelerometer at 60 Hz (no gyroscope, no permission prompt): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it exceeds DM_SHAKE_G
+ // (1.5 G by default; Documents/env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole cycle)
+@@ -113,6 +119,7 @@ static void phone_motion_start(UIView *body) {
+         dm_motion_set_switch(0, as, ws);
+     }];
+ }
++#endif
+ 
+ // ---- Layout constants ----
+ // Where each control is drawn (in u, x measured from the outer edge, the right half mirrors) is DmPadGeometry.h: pure functions of the bounds, the safe area,
+@@ -156,7 +163,9 @@ static void pads_start(void);   // Physical controllers, below
+     CAShapeLayer *_ring, *_knob;                   // the left stick (the right one is not drawn)
+     CALayer *_hint; CATextLayer *_hintText; NSString *_hintWords;   // the 3D layout's right-stick hint: words only, once per launch (see "The right-stick hint")
+     DmMenuButton *_menu;                           // opens the in-game menu (GameMenu.swift)
++#if !TARGET_OS_TV
+     UIImpactFeedbackGenerator *_touchFeedback;       // one short feedback per touch-control press edge
++#endif
+     unsigned _hapticSticks;
+     BOOL _stickShown;                              // the left stick was held at the last refresh
+     BOOL _full, _tap;                              // the 3D layout / the Tap layout is current
+@@ -200,12 +209,17 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+         [self registerForTraitChanges:@[UITraitDisplayScale.class] withHandler:^(id<UITraitEnvironment> environment, UITraitCollection *previous) {
+             [(UIView *)environment setNeedsLayout];
+         }];
+-        self.multipleTouchEnabled = YES; self.opaque = NO; self.backgroundColor = UIColor.clearColor;
++#if !TARGET_OS_TV
++        self.multipleTouchEnabled = YES;
++#endif
++        self.opaque = NO; self.backgroundColor = UIColor.clearColor;
++#if !TARGET_OS_TV
+         const char *feedback = getenv("DM_TOUCH_HAPTICS");
+         if (!feedback || atoi(feedback)) {
+             _touchFeedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+             [_touchFeedback prepare];
+         }
++#endif
+         _owner = [NSMapTable strongToStrongObjectsMapTable]; _faceOf = [NSMapTable strongToStrongObjectsMapTable];
+         static dispatch_once_t once;
+         dispatch_once(&once, ^{
+@@ -270,8 +284,12 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+     [self reset]; _tap = NO; _full = NO; [self applyLayout]; [self setNeedsLayout];
+ }
+ - (void)setTouchFeedback:(BOOL)on {
++#if TARGET_OS_TV
++    (void)on;
++#else
+     if (!on) { _touchFeedback = nil; return; }
+     if (!_touchFeedback) { _touchFeedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight]; [_touchFeedback prepare]; }
++#endif
+ }
+ 
+ // ---- Layout (points; computed inside the safe area) ----
+@@ -368,9 +386,13 @@ static int lockedKey(int c) {   // DmPadGeometry.h's control → the key it pres
+     BOOL changed = face != _faceBits || dpad != _dpadBits || btn != _btnBits;
+     uint64_t pressed = (face | dpad | btn) & ~(_faceBits | _dpadBits | _btnBits);
+     unsigned gripping = (_stick[0] ? 1u : 0) | (_stick[1] ? 2u : 0);
++#if !TARGET_OS_TV
+     if (pressed || (gripping & ~_hapticSticks)) {
+         [_touchFeedback impactOccurredWithIntensity:0.6]; [_touchFeedback prepare];
+     }
++#else
++    (void)pressed;
++#endif
+     _hapticSticks = gripping;
+     _faceBits = face; _dpadBits = dpad; _btnBits = btn;
+     pthread_mutex_lock(&g_mu);
+@@ -488,7 +510,9 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
+ 
+ - (void)layoutSubviews {
+     [super layoutSubviews];
++#if !TARGET_OS_TV
+     UIWindowScene *ws = self.window.windowScene; if (ws) atomic_store(&g_iface_orient, (int)ws.effectiveGeometry.interfaceOrientation);
++#endif
+     CGFloat u = self.u;
+     [CATransaction begin]; [CATransaction setDisableActions:YES];
+     CGFloat scale = MAX(self.traitCollection.displayScale, 1);
+@@ -669,13 +693,45 @@ static BOOL pads_slotted(GCController *gone) {
+     return waiting || pad_slot_mask(&g_slots) != 0;   // a controller waiting for its first press hides the touch gamepad too
+ }
+ - (void)updateControlVisibility {
++#if TARGET_OS_TV
++    _controls.hidden = YES;
++    _menu.hidden = YES;
++#else
+     _controls.hidden = _padOff;
+     _menu.hidden = _padOff && _layout.onTV;
++#endif
++}
++#if TARGET_OS_TV
++static void bind_siri_remote_fallback(BOOL hasExtended) {
++    for (GCController *c in GCController.controllers) {
++        if (c.extendedGamepad || !c.microGamepad) continue;
++        if (hasExtended) { c.microGamepad.valueChangedHandler = nil; c.microGamepad.buttonMenu.pressedChangedHandler = nil; continue; }
++        c.microGamepad.reportsAbsoluteDpadValues = YES;
++        c.microGamepad.buttonMenu.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL down) { (void)b; (void)v; (void)down; front_ios_quit_poll(); };
++        c.microGamepad.valueChangedHandler = ^(GCMicroGamepad *mg, GCControllerElement *el) {
++            (void)el;
++            front_ios_quit_poll();
++            if (front_ios_quit_blocks_input()) return;
++            uint64_t m = 0;
++            if (mg.buttonA.isPressed) m |= 1ull << B_A;
++            if (mg.buttonX.isPressed) m |= 1ull << B_PLUS;
++            if (mg.dpad.left.isPressed) m |= 1ull << B_LEFT;
++            if (mg.dpad.up.isPressed) m |= 1ull << B_UP;
++            if (mg.dpad.right.isPressed) m |= 1ull << B_RIGHT;
++            if (mg.dpad.down.isPressed) m |= 1ull << B_DOWN;
++            dm_pad_set_player(0, m, 0, 0, 0, 0);
++        };
++    }
+ }
++#endif
+ - (void)padsChanged:(NSNotification *)note {
+     GCController *c = note.object, *gone = [note.name isEqual:GCControllerDidDisconnectNotification] ? c : nil;
+     if (c && (!c.extendedGamepad || g_merge)) LOG("controller %s: %s%s", gone ? "disconnected" : "connected", pad_name(c), c.extendedGamepad ? "" : " (no extended gamepad profile: not used)");
+     BOOL any = g_merge ? pads_merged(gone) : pads_slotted(gone);
++#if TARGET_OS_TV
++    bind_siri_remote_fallback(any);
++    any = YES;
++#endif
+     dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; [self updateControlVisibility]; [self reset]; front_ios_quit_controllers(); });   // the touch gamepad hides while any controller is in use
+ }
+ @end
+@@ -710,7 +766,11 @@ static UIButton *cp_button(const char *title, SEL action, int primary) {
+     UIButtonConfiguration *cfg = primary ? UIButtonConfiguration.filledButtonConfiguration : UIButtonConfiguration.grayButtonConfiguration;
+     cfg.title = @(title); cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule; cfg.buttonSize = UIButtonConfigurationSizeLarge;
+     UIButton *b = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
++#if TARGET_OS_TV
++    [b addTarget:g_cp_target action:action forControlEvents:UIControlEventPrimaryActionTriggered]; return b;
++#else
+     [b addTarget:g_cp_target action:action forControlEvents:UIControlEventTouchUpInside]; return b;
++#endif
+ }
+ static void cp_show(void) {   // the card once per prompt; its count and its Done button follow each step
+     const char *env = getenv("DM_CTRL_PROMPT_TEXT"); char t[CP_TEXTS][256];
+diff --git a/dm/ios/Sources/DmHostingController.swift b/dm/ios/Sources/DmHostingController.swift
+index 14eee41..cf90eed 100644
+--- a/dm/ios/Sources/DmHostingController.swift
++++ b/dm/ios/Sources/DmHostingController.swift
+@@ -3,5 +3,7 @@ import UIKit
+ 
+ // Full-screen SwiftUI presentations must preserve the game's four-orientation policy.
+ final class DmHostingController<Content: View>: UIHostingController<Content> {
++    #if !os(tvOS)
+     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .all }
++    #endif
+ }
+diff --git a/dm/ios/Sources/Launcher.swift b/dm/ios/Sources/Launcher.swift
+index 011a893..4197595 100644
+--- a/dm/ios/Sources/Launcher.swift
++++ b/dm/ios/Sources/Launcher.swift
+@@ -10,6 +10,7 @@ import os
+ private func info(_ key: String) -> Any? { Bundle.main.object(forInfoDictionaryKey: key) }
+ 
+ 
++#if !os(tvOS)
+ /// Where this game's data comes from, and a picker to change it.
+ ///
+ /// The app can only read files it owns unless the player hands it a location through the document
+@@ -150,6 +151,7 @@ private struct DocumentPicker: UIViewControllerRepresentable {
+         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { onCancel() }
+     }
+ }
++#endif
+ 
+ private struct LauncherView: View {
+     @ObservedObject var m: LauncherModel
+@@ -188,8 +190,10 @@ private struct LauncherView: View {
+                     } footer: {
+                         Text("Brings back all settings this game was tested with.")
+                     }
++                    #if !os(tvOS)
+                     GameDataSection()
+                     CloudSavesSection()
++                    #endif
+                     Section {
+                         HStack {
+                             Text("Memory available")
+@@ -198,7 +202,9 @@ private struct LauncherView: View {
+                         }
+                     }
+                 }
++                #if !os(tvOS)
+                 .listStyle(.insetGrouped)
++                #endif
+                 .contentMargins(.horizontal, 12, for: .scrollContent)
+                 .frame(width: geometry.size.width * 2 / 3)
+             }
+@@ -214,7 +220,7 @@ private struct LauncherView: View {
+ 
+     @ViewBuilder var playButton: some View {
+         let button = Button(action: play) { Text("Play").font(.title3.weight(.semibold)).frame(maxWidth: 220) }.controlSize(.large)
+-        if #available(iOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
++        if #available(iOS 26.0, tvOS 26.0, *) { button.buttonStyle(.glassProminent) } else { button.buttonStyle(.borderedProminent) }
+     }
+ 
+     private func appIcon() -> UIImage? {
+diff --git a/dm/ios/Sources/LauncherRow.swift b/dm/ios/Sources/LauncherRow.swift
+index 82fa3b3..5d68c3a 100644
+--- a/dm/ios/Sources/LauncherRow.swift
++++ b/dm/ios/Sources/LauncherRow.swift
+@@ -45,9 +45,22 @@ struct SettingRow: View {
+                         Spacer()
+                         Text(percentage).monospacedDigit().foregroundStyle(.secondary)
+                     }
++                    #if os(tvOS)
++                    HStack(spacing: 12) {
++                        Button("−") {
++                            let step = s.step ?? 0.05
++                            rangeValue.wrappedValue = max(s.min ?? 0, rangeValue.wrappedValue - step)
++                        }
++                        Button("+") {
++                            let step = s.step ?? 0.05
++                            rangeValue.wrappedValue = min(s.max ?? 1, rangeValue.wrappedValue + step)
++                        }
++                    }
++                    #else
+                     Slider(value: rangeValue, in: (s.min ?? 0)...(s.max ?? 1), step: s.step ?? 0.05)
+                         .accessibilityLabel(s.label)
+                         .accessibilityValue(percentage)
++                    #endif
+                 }
+             default:
+                 Toggle(isOn: Binding(get: { (m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue })) {
+diff --git a/dm/ios/Sources/SaveSync.m b/dm/ios/Sources/SaveSync.m
+index 4b81728..a1bee03 100644
+--- a/dm/ios/Sources/SaveSync.m
++++ b/dm/ios/Sources/SaveSync.m
+@@ -9,6 +9,7 @@
+ #include "save_sync.h"
+ 
+ int front_save_sync_fetch(const char *cloud, const char *local) {
++    if (dm_save_sync_remote_is_url(cloud)) return dm_save_sync_remote_fetch(cloud, local);
+     @autoreleasepool {
+         NSFileManager *fm = [NSFileManager new];
+         NSURL *src = [NSURL fileURLWithPath:@(cloud)], *dst = [NSURL fileURLWithPath:@(local)];
+@@ -31,6 +32,7 @@ int front_save_sync_fetch(const char *cloud, const char *local) {
+ }
+ 
+ int front_save_sync_store(const char *local, const char *cloud) {
++    if (dm_save_sync_remote_is_url(cloud)) return dm_save_sync_remote_store(local, cloud);
+     @autoreleasepool {
+         NSFileManager *fm = [NSFileManager new];
+         NSURL *dst = [NSURL fileURLWithPath:@(cloud)];
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+index 3400f69..de5948e 100644
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -73,7 +73,7 @@ static void tv_attach(void);
+ @implementation DmRootView
+ + (BOOL)requiresConstraintBasedLayout { return YES; }
+ - (void)updateConstraints {
+-#if __has_include(<UIKit/UIHingeInteraction.h>)
++#if !TARGET_OS_TV && __has_include(<UIKit/UIHingeInteraction.h>)
+     if (@available(iOS 27.1, *)) {
+         // Reading here registers UIKit's automatic reserved-region invalidation.
+         [self reservedRegionsOfKind:UIViewReservedRegionKind.divisionRegionKind options:UIViewReservedRegionQueryOptionsIncludeInactive];
+@@ -84,7 +84,11 @@ static void tv_attach(void);
+ }
+ @end
+ 
++#if TARGET_OS_TV
++@interface DmRootVC : GCEventViewController
++#else
+ @interface DmRootVC : UIViewController
++#endif
+ @property (nonatomic, strong) DmGameView *game;
+ @property (nonatomic, strong) UIView *pad;
+ @property (nonatomic, strong) UILabel *fps;
+@@ -94,7 +98,7 @@ static void tv_attach(void);
+ @property (nonatomic) BOOL partiallyOpen;   // an iPhone Duo's hinge half open (UIHingeInteraction, iOS 27.1)
+ @property (nonatomic) NSInteger hingeStatus;
+ @property (nonatomic, copy) NSString *layoutLog;   // the last layout line logged
+-#if __has_include(<UIKit/UIHingeInteraction.h>)
++#if !TARGET_OS_TV && __has_include(<UIKit/UIHingeInteraction.h>)
+ - (void)hingeChanged:(UIHinge *)hinge API_AVAILABLE(ios(27.1));
+ #endif
+ @property (nonatomic) BOOL hasLauncher;   // the app has a settings screen: a failed Play goes back to it (its Game data section is the way out)
+@@ -115,7 +119,10 @@ static void launcher_done(void) { [g_root startGame]; }
+ - (void)viewDidLoad {
+     [super viewDidLoad];
+     self.view.backgroundColor = UIColor.blackColor;
+-#if __has_include(<UIKit/UIHingeInteraction.h>)
++#if TARGET_OS_TV
++    self.controllerUserInteractionEnabled = YES;
++#endif
++#if !TARGET_OS_TV && __has_include(<UIKit/UIHingeInteraction.h>)
+     if (@available(iOS 27.1, *)) {
+         __weak DmRootVC *weakSelf = self;
+         [self.view addInteraction:[[UIHingeInteraction alloc] initWithUpdateHandler:^(UIHingeInteraction *interaction, UIHingeInteractionUpdate *update) {
+@@ -130,7 +137,7 @@ static void launcher_done(void) { [g_root startGame]; }
+         [self showHint:why ? [NSString stringWithFormat:@"Game files unusable.\n%s", why] : @"Game files not found.\nPut the RomFS folder into this App's Documents as \"romfs\" (Files app), then restart."]; return;
+     }
+     front_ios_audio_watch();
+-#if defined(__IPHONE_27_0)   // compiled only with an SDK that has the scene accessory API
++#if !TARGET_OS_TV && defined(__IPHONE_27_0)   // compiled only with an SDK that has the scene accessory API
+     if (@available(iOS 27.0, *)) {   // iOS 27 offers a TV scene only to a registered scene accessory, no longer from the Info.plist entry alone (that path stays for iOS 26)
+         UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"TV" sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
+         c.delegateClass = NSClassFromString(@"DmTVSceneDelegate");
+@@ -138,7 +145,7 @@ static void launcher_done(void) { [g_root startGame]; }
+     }
+ #endif
+ }
+-#if __has_include(<UIKit/UIHingeInteraction.h>)
++#if !TARGET_OS_TV && __has_include(<UIKit/UIHingeInteraction.h>)
+ - (void)hingeChanged:(UIHinge *)hinge API_AVAILABLE(ios(27.1)) {
+     NSInteger status = hinge ? hinge.status : UIHingeStatusUnknown;
+     if (self.hingeStatus != status) {
+@@ -165,6 +172,9 @@ static void launcher_done(void) { [g_root startGame]; }
+     front_hud_env();   // before the process's first Metal device, which reads MTL_HUD_ENABLED (an env file's DM_METAL_HUD sets it in main.m already; GitHub issue #840)
+     const char *dev = front_ios_device_check();   // that first device: a GPU without BC textures is refused here, not at launch, so the launcher's HUD switch counts
+     if (dev) { [self showHint:[NSString stringWithFormat:@"This device is not supported.\n%s", dev]]; return; }   // the host does not start
++#if TARGET_OS_TV
++    self.controllerUserInteractionEnabled = NO;
++#endif
+     {   // Picture shape "auto" (the launcher's Match screen): the app window's own shape when it is taller than 16:9 (an iPad's 4:3, an unfolded iPhone Duo's 1.43:1; loader.c
+         // takes 1.3 to 1.77), else 16:9. The window's, not the screen's: on an iPad under Stage Manager or Split View the app does not fill the screen. Resolved here, before the
+         // host writes the state page (main.c dm_fps_state_apply)
+@@ -180,6 +190,10 @@ static void launcher_done(void) { [g_root startGame]; }
+     self.view.clipsToBounds = YES;   // with Fill the game view is larger than the screen
+     self.view.window.traitOverrides.preferredContentSizeCategory = UIContentSizeCategorySmall;   // UIKit draws the in-game menu (GameMenu.swift) in this window: it keeps one compact text size over the game, whatever the system's text size
+     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
++#if TARGET_OS_TV
++    if (!getenv("DM_TV_NATIVE_4K")) self.game.maxPixelWidth = 1920;   // Apple TV 4K: render 1080p docked and let the TV scaler upscale to 4K 60 Hz
++    if (!getenv("DM_OPMODE")) dm_set_opmode(1);
++#endif
+     [self.view addSubview:self.game];
+     g_layer = (CAMetalLayer *)self.game.layer;
+     if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
+@@ -200,7 +214,7 @@ static void launcher_done(void) { [g_root startGame]; }
+     CGRect b = self.view.bounds; if (!self.game) return;
+     CGRect division = CGRectNull;   // an iPhone Duo's fold, as UIKit reports it (iOS 27.1)
+     NSMutableArray<NSString *> *regionLog = [NSMutableArray array];
+-#if __has_include(<UIKit/UIHingeInteraction.h>)
++#if !TARGET_OS_TV && __has_include(<UIKit/UIHingeInteraction.h>)
+     if (@available(iOS 27.1, *)) {
+         for (UIViewReservedRegion *region in [self.view reservedRegionsOfKind:UIViewReservedRegionKind.divisionRegionKind options:UIViewReservedRegionQueryOptionsIncludeInactive]) {
+             [regionLog addObject:[NSString stringWithFormat:@"%@ active=%d", NSStringFromCGRect(region.frame), region.isActive]];
+@@ -216,7 +230,7 @@ static void launcher_done(void) { [g_root startGame]; }
+     if (!onTV) self.game.frame = layout.game;
+     layout.topSafeOnly = duoPortrait;
+     BOOL hingeClosed = NO;
+-#if __has_include(<UIKit/UIHingeInteraction.h>)
++#if !TARGET_OS_TV && __has_include(<UIKit/UIHingeInteraction.h>)
+     if (@available(iOS 27.1, *)) hingeClosed = self.hingeStatus == UIHingeStatusClosed;
+ #endif
+     layout.customControlsFullBounds = dm_layout_custom_controls_full_bounds(b, hingeClosed);
+@@ -248,10 +262,12 @@ static void launcher_done(void) { [g_root startGame]; }
+     if (!self.hasLauncher) [self startGame];   // the settings screen first (Launcher.swift), when the app has one
+     front_ios_notify_ask();
+ }
++#if !TARGET_OS_TV
+ - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
+ - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
+ - (BOOL)prefersStatusBarHidden { return YES; }
+ - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskAll; }
++#endif
+ @end
+ UIViewController *front_ios_root(void) { return [DmRootVC new]; }
+ 
+@@ -329,6 +345,15 @@ bool dm_setting_live(const char *env, const char *value) {
+ // Brightness is read on the main thread at start and on each change; every change of the thermal state and of Low Power Mode (which lowers the CPU clock) is logged with the time since launch
+ static _Atomic double g_brightness = -1;
+ int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
++#if TARGET_OS_TV
++int dm_low_power_now(void) { return 0; }
++double dm_brightness_now(void) { return g_brightness; }
++static void front_ios_power_watch(void) {
++    [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
++        (void)n; LOG("front end: thermal state → %d (%.0f s after launch)", dm_thermal_now(), (now_ns() - g_t0_ns) / 1e9); }];
++    LOG("front end: thermal state %d (tvOS)", dm_thermal_now());
++}
++#else
+ int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled; }   // the frame step does not probe in it (hle_nvn.c fstep_cpu_slowed)
+ double dm_brightness_now(void) { return g_brightness; }
+ static void front_ios_power_watch(void) {
+@@ -340,6 +365,7 @@ static void front_ios_power_watch(void) {
+         (void)n; LOG("front end: Low Power Mode → %s (%.0f s after launch)", dm_low_power_now() ? "on" : "off", (now_ns() - g_t0_ns) / 1e9); }];
+     LOG("front end: thermal state %d, brightness %.2f, Low Power Mode %s", dm_thermal_now(), g_brightness, dm_low_power_now() ? "on" : "off");
+ }
++#endif
+ 
+ // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
+ // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 (the launcher, Documents/env.txt) overrides that without a rebuild,
+@@ -406,6 +432,13 @@ void front_web_detach(UIView *box) { (void)box; }
+ // app ends (hle_oe.c); the next start runs it. To spare the player a silent quit, the app names the program on screen for 1.5 s, then schedules a local notification 1 s ahead that
+ // opens the app again ("Tap to start …"), then ends. Notifications are asked for at the first start of such an app; a player who refuses gets the plain quit
+ static int multi_program(void) { const char *e = getenv("DM_EXEC_OUT"); return e && *e; }
++#if TARGET_OS_TV
++static void front_ios_notify_setup(void) { (void)multi_program; }
++static void front_ios_notify_ask(void) {}
++void front_program_handoff(int index, const char *name) {
++    LOG("front end: program %d (%s) starts at the next start of the app", index, name && *name ? name : "-");
++}
++#else
+ @interface DmNotifyDelegate : NSObject <UNUserNotificationCenterDelegate>
+ @end
+ @implementation DmNotifyDelegate
+@@ -454,6 +487,7 @@ void front_program_handoff(int index, const char *name) {   // front.h; on the g
+     else if (err) LOG("[RED] front end: the notification for program %d could not be scheduled: %s", index, err.localizedDescription.UTF8String);
+     else LOG("front end: \"Starting %s\" shown, notification for program %d scheduled", nm.UTF8String, index);
+ }
++#endif
+ void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
+ 
+ // Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result
+@@ -620,9 +654,23 @@ static void quit_start(void) {
+ static void quit_buttons(int *home, int *a, int *b, GCController *__strong *holder) {
+     *home = *a = *b = 0;
+     for (GCController *c in GCController.controllers) {
+-        GCExtendedGamepad *g = c.extendedGamepad; if (!g) continue;
+-        if (g.buttonHome.isPressed) { *home = 1; if (!*holder) *holder = c; }
+-        *a |= g.buttonA.isPressed; *b |= g.buttonB.isPressed;
++        GCExtendedGamepad *g = c.extendedGamepad;
++        if (g) {
++            BOOL h = g.buttonHome.isPressed;
++#if TARGET_OS_TV
++            h = h || (g.buttonOptions.isPressed && g.buttonMenu.isPressed) || (g.leftThumbstickButton.isPressed && g.rightThumbstickButton.isPressed);
++#endif
++            if (h) { *home = 1; if (!*holder) *holder = c; }
++            *a |= g.buttonA.isPressed; *b |= g.buttonB.isPressed;
++            continue;
++        }
++#if TARGET_OS_TV
++        GCMicroGamepad *mg = c.microGamepad;
++        if (mg) {
++            if (mg.buttonMenu.isPressed) { *home = 1; if (!*holder) *holder = c; }
++            *a |= mg.buttonA.isPressed; *b |= mg.buttonX.isPressed;
++        }
++#endif
+     }
+ }
+ static void quit_hide_hold(void) { [g_hq_timer invalidate]; g_hq_timer = nil; [g_hq_hold removeFromSuperlayer]; g_hq_hold = nil; g_hq_ring = nil; }
+@@ -640,7 +688,10 @@ static void quit_show_prompt(GCController *holder) {
+     GCController *pad = holder; if (!pad) for (GCController *c in GCController.controllers) if (c.extendedGamepad) { pad = c; break; }
+     GCExtendedGamepad *g = pad.extendedGamepad;   // with a controller the pills show its own A and B, with touch alone the words only
+     DmQuitView *v = [[DmQuitView alloc] initWithFrame:root.bounds];
+-    v.multipleTouchEnabled = NO; v.down = -1; v.opened = CACurrentMediaTime();
++#if !TARGET_OS_TV
++    v.multipleTouchEnabled = NO;
++#endif
++    v.down = -1; v.opened = CACurrentMediaTime();
+     v.layout = qp_layout_make(root.bounds.size, quit_text(HQ_TEXT_TITLE), quit_text(HQ_TEXT_NOTE), quit_text(HQ_TEXT_QUIT), quit_text(HQ_TEXT_CANCEL), g != nil);
+     UIImage *ga = g ? quit_glyph(g.buttonA.sfSymbolsName, @"a.circle") : nil, *gb = g ? quit_glyph(g.buttonB.sfSymbolsName, @"b.circle") : nil;
+     CALayer *actions = nil; qp_layout l = v.layout;
+@@ -745,7 +796,7 @@ void *dm_quit_menu(void) {
+ // the app decides ("app"). Either way the in-game menu's Quit stays, as the gear stays with a controller
+ void front_ios_quit_controllers(void) {
+     quit_start();
+-#if defined(__IPHONE_27_0)
++#if !TARGET_OS_TV && defined(__IPHONE_27_0)
+     if (@available(iOS 27.0, *)) {
+         static int done; if (done || !g_hq_on) return;
+         int any = 0; for (GCController *c in GCController.controllers) if (c.extendedGamepad) any = 1;
+diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
+index 757d875..60c915c 100644
+--- a/dm/ios/Sources/main.m
++++ b/dm/ios/Sources/main.m
+@@ -77,8 +77,16 @@ static BOOL romfs_dir_ok(NSString *d) {
+ //   save/ temp/ this game's saves and scratch space
+ // The layout exists so several games can share one installed app and so the game data can sit on
+ // an external drive the Files app exposes (a folder copied there keeps this shape).
++static NSString *app_data_dir(void) {
++#if TARGET_OS_TV
++    return NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES)[0];
++#else
++    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++#endif
++}
++
+ static NSString *game_dir_for(const char *title_id) {
+-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++    NSString *doc = app_data_dir();
+     return [[doc stringByAppendingPathComponent:@"games"] stringByAppendingPathComponent:@(title_id)];
+ }
+ 
+@@ -97,7 +105,7 @@ static NSArray<NSString *> *romfs_document_images(NSString *doc) {
+ static NSString *g_prog;   // a game of several programs: the running program's folder in the app (p<N>, program_env); nil otherwise
+ static NSString *romfs_locate(NSString *prog) {   // prog: a game of several programs, the running program's folder in the app (p<N>); nil otherwise
+     NSFileManager *fm = NSFileManager.defaultManager;
+-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++    NSString *doc = app_data_dir();
+     if (prog) {   // the program's files are in the app (Documents holds one image, one program's)
+         NSString *p = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:prog], *img = [p stringByAppendingPathComponent:@"romfs.img"], *d = [p stringByAppendingPathComponent:@"romfs"];
+         if (romfs_image_complete(img)) return img;
+@@ -160,7 +168,7 @@ static NSString *romfs_locate(NSString *prog) {   // prog: a game of several pro
+ static int set_data_env(NSString *romfs, BOOL force) {
+     if (!romfs) return 0;
+     NSFileManager *fm = NSFileManager.defaultManager;
+-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++    NSString *doc = app_data_dir();
+     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
+     setenv("DM_ROMFS", romfs.fileSystemRepresentation, force);
+     // Saves and scratch space: Documents/games/<id>/{save,temp} when the per-game layout is in use
+@@ -190,7 +198,7 @@ int dm_locate_game_data(void) { return set_data_env(romfs_locate(g_prog), YES);
+ static void aoc_locate(void) {
+     if (getenv("DM_AOC_DIR")) return;
+     NSFileManager *fm = NSFileManager.defaultManager;
+-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++    NSString *doc = app_data_dir();
+     for (NSString *d in @[[doc stringByAppendingPathComponent:@"aoc"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aoc"]]) {
+         BOOL dir = NO;
+         if (![fm fileExistsAtPath:d isDirectory:&dir] || !dir) continue;
+@@ -229,7 +237,7 @@ static void romfs_identity_report(NSString *doc) {
+ static NSString *program_env(NSString **msl_out);
+ static int boot_env(void) {
+     NSFileManager *fm = NSFileManager.defaultManager;
+-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
++    NSString *doc = app_data_dir();
+     NSString *res = NSBundle.mainBundle.resourcePath;
+     for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
+     // Keep game files and scratch data out of device backups (Documents is backed up by default; a RomFS placed there is many GB). Saves, logs and the pipeline list stay in the backup
+@@ -334,7 +342,7 @@ static int boot_env(void) {
+ // Started from the record, the settings screen stays away (DM_LAUNCHER=0): the player is on the way into a game. Returns the program's dm folder (the host's modules folder), nil when its game files are missing
+ static NSString *program_env(NSString **msl_out) {
+     NSFileManager *fm = NSFileManager.defaultManager;
+-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0], *res = NSBundle.mainBundle.resourcePath;
++    NSString *doc = app_data_dir(), *res = NSBundle.mainBundle.resourcePath;
+     NSString *dmdir = [res stringByAppendingPathComponent:@"dm"], *msl = [res stringByAppendingPathComponent:@"msl"], *prog = nil;
+     NSString *plist = [NSString stringWithContentsOfFile:[dmdir stringByAppendingPathComponent:@"programs.txt"] encoding:NSUTF8StringEncoding error:nil];
+     if (plist) {
+@@ -377,7 +385,12 @@ int front_ios_boot_ok(void) { return g_boot_ok; }
+ @end
+ @implementation App
+ - (UISceneConfiguration *)application:(UIApplication *)a configurationForConnectingSceneSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
++#if TARGET_OS_TV
++    (void)a; (void)o;
++    return [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:s.role];
++#else
+     return [[UISceneConfiguration alloc] initWithName:[s.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive] ? @"TV" : @"Default" sessionRole:s.role];   // a TV (front_ios.m DmTVSceneDelegate)
++#endif
+ }
+ @end
+ 
+diff --git a/dm/ios/framework/ShellGlue.m b/dm/ios/framework/ShellGlue.m
+index 810c4ad..23f98dd 100644
+--- a/dm/ios/framework/ShellGlue.m
++++ b/dm/ios/framework/ShellGlue.m
+@@ -39,9 +39,11 @@ void dm_glue_present_game(void *win) {
+     if (!window) { fprintf(stderr, "[RED] shell: no window for the game view\n"); return; }
+     UIViewController *game = front_ios_root();   // DmRootVC: landscape, its viewDidAppear starts the game (no settings screen: dm_show_launcher)
+     window.rootViewController = game;
++#if !TARGET_OS_TV
+     [game setNeedsUpdateOfSupportedInterfaceOrientations];
+     [window.windowScene requestGeometryUpdateWithPreferences:[[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:UIInterfaceOrientationMaskLandscape]
+                                                 errorHandler:^(NSError *e) { fprintf(stderr, "shell: landscape request: %s\n", e.localizedDescription.UTF8String); }];
++#endif
+ }
+ 
+ __attribute__((used, visibility("default")))
+diff --git a/dm/ios/project-shell.yml b/dm/ios/project-shell.yml
+index aecb47f..3c896aa 100644
+--- a/dm/ios/project-shell.yml
++++ b/dm/ios/project-shell.yml
+@@ -40,7 +40,7 @@ targets:
+       path: Gen/Info.plist
+       properties:
+         CFBundleDisplayName: ${DM_SHELL_NAME}
+-        CFBundleLocalizations: [en, de, fr, it, ja, sv, zh-Hans]   # one per file of frontend/l10n (tools/l10n_shell_catalogs.py), iOS offers only the declared ones to the package bundles
++        CFBundleLocalizations: [en, de, es, fr, it, ja, sv, zh-Hans]   # one per file of frontend/l10n (tools/l10n_shell_catalogs.py), iOS offers only the declared ones to the package bundles
+         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+         CFBundleShortVersionString: $(MARKETING_VERSION)
+         UILaunchScreen: {}
+diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
+index 889811c..5274b47 100755
+--- a/dm/ios/tools/build_ipa.sh
++++ b/dm/ios/tools/build_ipa.sh
+@@ -36,9 +36,16 @@ export GAME; GD=$(python3 "$DM/games/game.py" dir "$GAME") || die "no game profi
+ gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }   # read a key of the game profile
+ [ -f "$GD/game.tsv" ] || die "no game profile $GD/game.tsv"
+ [ -n "${W:-}" ] || die "W is not set: W=<NSP folder>/$GAME-work (the game's work folder) $0"
++DM_PLATFORM=${DM_PLATFORM:-ios}
++case "$DM_PLATFORM" in
++  ios) PLAT_DIR=ios; XCODE_SDK=iphoneos; XCODE_DEST='generic/platform=iOS'; PSO_PLAT=ios; PLAT_LABEL='iPhone + iPad' ;;
++  tvos) PLAT_DIR=tvos; XCODE_SDK=appletvos; XCODE_DEST='generic/platform=tvOS'; PSO_PLAT=tvos; PLAT_LABEL='Apple TV' ;;
++  *) die "unsupported DM_PLATFORM=$DM_PLATFORM (expected ios or tvos)" ;;
++esac
++export DM_PLATFORM
+ PKG=$(gp package)
+ if [ -z "${ROMFS:-}" ] && [ -f "$W/data/$PKG/RomFS.img" ]; then ROMFS=$W/data/$PKG/RomFS.img; fi
+-PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
++PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/$PLAT_DIR/dmsh_b}; AOC=${AOC-$W/data/aoc}
+ PREPARE_XCODE=NO; [ "${1:-}" != --prepare-xcode ] || PREPARE_XCODE=YES
+ FRAMEWORK=${DM_FRAMEWORK:-0}   # 1: the game's modules live in DmGame.framework (route C); 0: in the executable, as always
+ # Route C's shell (DM_FRAMEWORK_ONLY=<folder>): only this game's framework, self-contained, for build_shell.sh to embed (no app, no IPA)
+@@ -47,8 +54,8 @@ if [ -n "$FRAMEWORK_ONLY" ]; then
+   [ "$PREPARE_XCODE" != YES ] || die "DM_FRAMEWORK_ONLY builds the game framework for the shell; it cannot be combined with --prepare-xcode"
+   FRAMEWORK=1; FW_NAME=DmGame$(echo "$GAME" | tr 'a-z' 'A-Z')   # unique in the shell's Frameworks/, where several games sit side by side
+ fi
+-OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd
+-XCODE_DD=${DM_XCODE_DERIVED_DATA:-$W/build/ios/xcode-dd}
++OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}; O=$W/build/$PLAT_DIR/pkg; DD=$O/dd
++XCODE_DD=${DM_XCODE_DERIVED_DATA:-$W/build/$PLAT_DIR/xcode-dd}
+ MARKER=$(gp romfs_marker)
+ NACP=$W/data/v0/control.nacp; [ -f "$NACP" ] || NACP=$(dirname "$ROMFS")/control.nacp
+ [ -n "${DM_DISPLAY_NAME:-}" ] || DM_DISPLAY_NAME=$(python3 "$DM/tools/nacp.py" "$NACP") || die "no game name in $NACP (re-extract with nx_extract, or set DM_DISPLAY_NAME)"
+@@ -161,9 +168,9 @@ PGK=g18p; N=0; for w in $PG; do case $w in none) N=9; break ;; esac; case ${w#ap
+ if [ "$P4" = on ] && [ "$PG" ]; then case $N in 1 | 2 | 3 | 4) PGK=$(echo "$PG" | tr -s ' \t' ',') ;; *) t "profile $GD: pso_gpu '$PG' is not 1-4 whitespace-separated GPU architectures (each one such as g18p or applegpu_g19p, with or without the applegpu_ prefix; there is no none: without the key the archive defaults follow pso_mtl4) - taking g18p" ;; esac; fi
+ if [ -n "${DM_PSO_GPUS+set}" ]; then GPUS=$DM_PSO_GPUS; elif [ "$P4" = on ]; then GPUS=$PGK; else GPUS=none; fi
+ if [ "$GFXAPI" = nvn ] && [ -n "$GPUS" ] && [ "$GPUS" != none ] && [ -f "$GD/shader_pairs.tsv" ]; then
+-  PSO=$W/build/ios/pso/bundle
++  PSO=$W/build/$PLAT_DIR/pso/bundle
+   t "pipeline archive for $GPUS (metal-tt; minutes when its inputs changed)"
+-  python3 "$DM/gfx/tools/pso_offline.py" --game "$GAME" --msl "$MSL_IOS/b-$V" --out "$PSO" --work "$W/build/ios/pso/work" --gpu "$GPUS" ${DM_PSO_IOS_MIN:+--os-min "$DM_PSO_IOS_MIN"} \
++  python3 "$DM/gfx/tools/pso_offline.py" --game "$GAME" --msl "$MSL_IOS/b-$V" --out "$PSO" --work "$W/build/$PLAT_DIR/pso/work" --platform "$PSO_PLAT" --gpu "$GPUS" ${DM_PSO_IOS_MIN:+--os-min "$DM_PSO_IOS_MIN"} \
+     | while IFS= read -r ln; do t "$ln"; done
+   if [ "${PIPESTATUS[0]}" != 0 ]; then   # an optimization: the device builds the bases on its first start without it
+     t "[RED] pipeline archive: pso_offline.py failed (its output is above); the app is built without one and the device builds its pipeline bases on its first start (DM_PSO_GPUS=none skips this step)"
+@@ -185,12 +192,13 @@ mkdir -p Gen/dm/font && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial
+ # The catalog is always created (the project always lists it, see project.yml); without an icon it stays empty and DM_APPICON is not set
+ ICON=${DM_ICON:-$(dirname "$ROMFS")/icon.jpg}
+ mkdir -p Gen/Assets.xcassets && printf '{"info":{"author":"xcode","version":1}}\n' > Gen/Assets.xcassets/Contents.json || die "asset catalog"
+-if [ -f "$ICON" ]; then
++if [ -f "$ICON" ] && [ "$DM_PLATFORM" != tvos ]; then
+   AI=Gen/Assets.xcassets/AppIcon.appiconset; mkdir -p "$AI" || die "mkdir $AI"
+   sips -s format png -z 1024 1024 "$ICON" --out "$AI/icon.png" > /dev/null || die "sips: cannot convert the icon $ICON"
+   printf '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}\n' > "$AI/Contents.json"
+   echo "DM_APPICON = AppIcon" >> Gen/dm.xcconfig
+   t "app icon: $ICON"
++elif [ -f "$ICON" ]; then t "app icon: $ICON (packed for DmShell on tvOS)"
+ else t "no app icon ($ICON not found): the home-screen icon stays blank"; fi
+ # Route C (DM_FRAMEWORK=1): what project-framework.yml reads from Gen/framework.
+ #   dm/                   the tables the loader reads from argv[1] and every table the shader map's directory holds (DM_NVN_SHMAP):
+@@ -236,7 +244,32 @@ fi
+ [ "${DM_COPY_ROMFS:-YES}" != NO ] || [ "$PREPARE_XCODE" != YES ] || echo "DM_COPY_ROMFS = NO" >> Gen/dm.xcconfig
+ # The framework project is named explicitly. Everything else runs xcodegen exactly as before: a prepared project has its
+ # template copied in as project.yml, and the in-place build uses dm/ios/project.yml (the default template is never edited)
+-if [ "$PREPARE_XCODE" = YES ] || [ "$FRAMEWORK" != 1 ]; then xcodegen generate -q > /dev/null || die "xcodegen"
++SPEC_IN=project.yml; if [ "$PREPARE_XCODE" != YES ] && [ "$FRAMEWORK" = 1 ]; then SPEC_IN=project-framework.yml; fi
++if [ "$DM_PLATFORM" = tvos ]; then
++  python3 -I - "$SPEC_IN" Gen/project-tvos.yml <<'PY' || die "project-tvos.yml"
++import sys
++src, dst = sys.argv[1:]
++drop_single = ('UIFileSharingEnabled:', 'LSSupportsOpeningDocumentsInPlace:', 'UIRequiresFullScreen:', 'UIStatusBarHidden:', 'UIViewControllerBasedStatusBarAppearance:', 'LSSupportsGameMode:', 'CADisableMinimumFrameDurationOnPhone:')
++drop_blocks = ('UISupportedInterfaceOrientations:', 'UISupportedInterfaceOrientations~ipad:', 'UIWindowSceneSessionRoleExternalDisplayNonInteractive:')
++out, skip_indent = [], None
++for raw in open(src, encoding='utf-8').read().splitlines():
++    s = raw.lstrip()
++    ind = len(raw) - len(s)
++    if skip_indent is not None:
++        if s and not s.startswith('#') and ind <= skip_indent: skip_indent = None
++        else: continue
++    if s.startswith(drop_blocks):
++        skip_indent = ind; continue
++    if s.startswith(drop_single): continue
++    line = raw.replace('iOS: "26.0"', 'tvOS: "26.0"').replace('platform: iOS', 'platform: tvOS').replace('TARGETED_DEVICE_FAMILY: "1,2"', 'TARGETED_DEVICE_FAMILY: "3"').replace('-mcpu=apple-a18', '-mcpu=apple-a15')
++    out.append(line)
++    if s == '- ProfileName: ExtendedGamepad':
++        pad = raw[:ind]
++        out += [f'{pad}- ProfileName: DirectionalGamepad', f'{pad}- ProfileName: MicroGamepad']
++open(dst, 'w', encoding='utf-8').write('\n'.join(out) + '\n')
++PY
++  xcodegen generate -q --spec Gen/project-tvos.yml > /dev/null || die "xcodegen"
++elif [ "$SPEC_IN" = project.yml ]; then xcodegen generate -q > /dev/null || die "xcodegen"
+ else xcodegen generate -q --spec project-framework.yml > /dev/null || die "xcodegen"; fi
+ # DMCommit / DMChain: the checkout that built the app (+dirty with uncommitted changes to tracked files) and the shader chain it carries, which the host logs at start (main.c)
+ COMMIT=$(git -C "$DM" rev-parse --short=12 HEAD 2> /dev/null) && { [ -z "$(git -C "$DM" status --porcelain --untracked-files=no 2> /dev/null)" ] || COMMIT=$COMMIT+dirty
+@@ -260,13 +293,13 @@ fi
+ # game's per-game resources into it, so one folder is one game: the shader libraries (msl/<MSLDIR> or msl/<MSLDIR>.img, msl/ the shell's DM_MSL_DIR), the pipeline
+ # archive (pso/, DM_PSO_BUNDLE) and the icon the shell's library shows. The game files and add-on content stay out (data, Documents/games/<id>/)
+ if [ -n "$FRAMEWORK_ONLY" ]; then
+-  t "xcodebuild (Release, unsigned, the game framework $FW_NAME with its own host)"
++  t "xcodebuild (Release, unsigned, the game framework $FW_NAME with its own host, $PLAT_LABEL)"
+   mkdir -p "$O" "$FRAMEWORK_ONLY" || die "mkdir $FRAMEWORK_ONLY"
+-  xcodebuild -project DmIOS.xcodeproj -target DmShellGame -configuration Release -sdk iphoneos \
++  xcodebuild -project DmIOS.xcodeproj -target DmShellGame -configuration Release -sdk "$XCODE_SDK" \
+     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= PRODUCT_NAME="$FW_NAME" PRODUCT_BUNDLE_IDENTIFIER="$DM_BUNDLE_ID.game" \
+     DM_XCODE_OUTPUT_ROOT="$DD" SYMROOT="$DD/Build/Products" OBJROOT="$DD/Build/Intermediates.noindex" build > "$O/build-framework.log" 2>&1 \
+     || { grep -E 'error:' "$O/build-framework.log" | head -20; die "xcodebuild, log $O/build-framework.log"; }
+-  BUILT=$DD/Build/Products/Release-iphoneos/$FW_NAME.framework
++  BUILT=$DD/Build/Products/Release-$XCODE_SDK/$FW_NAME.framework
+   [ -f "$BUILT/$FW_NAME" ] || die "no built framework $BUILT"
+   OUTFW=$FRAMEWORK_ONLY/$FW_NAME.framework; mkdir -p "$OUTFW"
+   rsync -a --delete --exclude /msl --exclude /pso --exclude /icon.png -- "$BUILT/" "$OUTFW/" || die "copy the framework to $OUTFW"
+@@ -289,14 +322,14 @@ if [ -n "$FRAMEWORK_ONLY" ]; then
+   exit 0
+ fi
+ 
+-t "xcodebuild (Release, unsigned, iPhone + iPad)"
++t "xcodebuild (Release, unsigned, $PLAT_LABEL)"
+ mkdir -p "$O"
+-xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
++xcodebuild -project DmIOS.xcodeproj -scheme DmIOS -configuration Release -destination "$XCODE_DEST" -derivedDataPath "$DD" \
+   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DM_COPY_GAME_RESOURCES=NO \
+   DM_XCODE_OUTPUT_ROOT="$DD" SYMROOT="$DD/Build/Products" OBJROOT="$DD/Build/Intermediates.noindex" build > "$O/build.log" 2>&1 \
+   || { grep -E 'error:' "$O/build.log" | head -20; die "xcodebuild, log $O/build.log"; }
+ # SYMROOT and OBJROOT above keep the unsigned build separate from the interactive Xcode app.
+-APP=$DD/Build/Products/Release-iphoneos/DmIOS.app
++APP=$DD/Build/Products/Release-$XCODE_SDK/DmIOS.app
+ [ -n "$APP" ] && [ -d "$APP" ] || die "no built app"; t "app: $APP"
+ 
+ # Straight from the sources: the app without its signature, and without the folders an app built before pack_ipa.py still has (DerivedData keeps resources that left the project;
+diff --git a/dm/ios/tools/build_shell.sh b/dm/ios/tools/build_shell.sh
+index 8c9c2df..7b8bbf6 100755
+--- a/dm/ios/tools/build_shell.sh
++++ b/dm/ios/tools/build_shell.sh
+@@ -32,6 +32,13 @@ mkdir -p "$SHELL_DIR" || die "mkdir $SHELL_DIR"; S=$(cd "$SHELL_DIR" && pwd)
+ [ -n "${DM_SHELL_PACKAGE:-}" ] || { [ -f "$REPO/frontend-ios/Package.swift" ] && DM_SHELL_PACKAGE=$REPO/frontend-ios || DM_SHELL_PACKAGE=$(cd "$REPO/.." && pwd)/frontend-ios; }
+ export DM_SHELL_PACKAGE
+ [ -f "$DM_SHELL_PACKAGE/Package.swift" ] || die "no Swift package at $DM_SHELL_PACKAGE (DM_SHELL_PACKAGE)"
++DM_PLATFORM=${DM_PLATFORM:-ios}
++case "$DM_PLATFORM" in
++  ios) XCODE_SDK=iphoneos; XCODE_DEST='generic/platform=iOS'; PLAT_LABEL='iPhone + iPad' ;;
++  tvos) XCODE_SDK=appletvos; XCODE_DEST='generic/platform=tvOS'; PLAT_LABEL='Apple TV' ;;
++  *) die "unsupported DM_PLATFORM=$DM_PLATFORM (expected ios or tvos)" ;;
++esac
++export DM_PLATFORM
+ export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.shell} DM_TEAM_ID=${DM_TEAM_ID:-0000000000} DM_SHELL_NAME=${DM_SHELL_NAME:-NX2Apple} DM_APP_VERSION=${DM_APP_VERSION:-1.0}
+ export DM_FORK_PATCHES=$(paste -sd, "$DM/fork_patches.txt" 2>/dev/null || true)
+ DD=${DM_XCODE_DERIVED_DATA:-$S/dd}; mkdir -p "$DD" && DD=$(cd "$DD" && pwd)
+@@ -72,24 +79,53 @@ mkdir -p Gen/Assets.xcassets && printf '{"info":{"author":"xcode","version":1}}\
+ # The shell asks for the Increased Memory Limit capability, as the one-game app does; a framework cannot hold entitlements
+ printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+   '<plist version="1.0"><dict><key>com.apple.developer.kernel.increased-memory-limit</key><true/></dict></plist>' > Gen/DmShell.entitlements || die "entitlements"
++if [ -n "${DM_CLOUDKIT_CONTAINER:-}" ]; then
++  python3 -I - Gen/DmShell.entitlements <<'PY' || die "CloudKit entitlements"
++import os, plistlib, sys
++p = sys.argv[1]
++d = {} if 'DM_ENTITLEMENTS' in os.environ and not os.environ['DM_ENTITLEMENTS'] else {'com.apple.developer.kernel.increased-memory-limit': True}
++ck = os.environ['DM_CLOUDKIT_CONTAINER']
++d['com.apple.developer.icloud-container-identifiers'] = [ck]
++d['com.apple.developer.icloud-services'] = ['CloudKit']
++d['aps-environment'] = 'development'
++with open(p, 'wb') as f: plistlib.dump(d, f)
++PY
++fi
+ # DM_ENTITLEMENTS= (empty) leaves the request out, for a team whose profiles cannot carry the capability yet (the game may then run
+ # out of memory on the device)
+-if [ "$MODE" = --prepare-xcode ] && [ -n "${DM_ENTITLEMENTS-default}" ]; then echo "CODE_SIGN_ENTITLEMENTS = Gen/DmShell.entitlements" >> Gen/dm.xcconfig
++if [ "$MODE" = --prepare-xcode ] && { [ -n "${DM_ENTITLEMENTS-default}" ] || [ -n "${DM_CLOUDKIT_CONTAINER:-}" ]; }; then echo "CODE_SIGN_ENTITLEMENTS = Gen/DmShell.entitlements" >> Gen/dm.xcconfig
+ elif [ "$MODE" = --prepare-xcode ]; then t "entitlements: none (DM_ENTITLEMENTS is empty): no Increased Memory Limit"; fi
+ # The template with one embedded, unlinked framework per game where it says @FRAMEWORKS@
+ python3 -I - "$IOS_SOURCE/project-shell.yml" "$FWLIST" project.yml <<'PY' || die "project.yml"
+-import sys
++import os, sys
+ template, fwlist, out = sys.argv[1:]
+-lines, done = [], False
++tvos = os.environ.get('DM_PLATFORM') == 'tvos'
++drop_single = ('UIFileSharingEnabled:', 'LSSupportsOpeningDocumentsInPlace:', 'LSSupportsGameMode:', 'CADisableMinimumFrameDurationOnPhone:')
++drop_blocks = ('UISupportedInterfaceOrientations:', 'UISupportedInterfaceOrientations~ipad:')
++lines, done, skip_indent = [], False, None
+ for line in open(template, encoding='utf-8').read().splitlines():
+-    if line.lstrip().startswith('# @FRAMEWORKS@'):
+-        pad = line[:len(line) - len(line.lstrip())]
++    s = line.lstrip()
++    ind = len(line) - len(s)
++    if tvos:
++        if skip_indent is not None:
++            if s and not s.startswith('#') and ind <= skip_indent: skip_indent = None
++            else: continue
++        if s.startswith(drop_blocks):
++            skip_indent = ind; continue
++        if s.startswith(drop_single): continue
++    if s.startswith('# @FRAMEWORKS@'):
++        pad = line[:ind]
+         for row in open(fwlist, encoding='utf-8').read().splitlines():
+             path = row.split('\t')[1]
+             lines += [f'{pad}- framework: "{path}"', f'{pad}  embed: true', f'{pad}  link: false', f'{pad}  codeSign: true']
+         done = True
+         continue
++    if tvos:
++        line = line.replace('iOS: "26.0"', 'tvOS: "26.0"').replace('platform: iOS', 'platform: tvOS').replace('TARGETED_DEVICE_FAMILY: "1,2"', 'TARGETED_DEVICE_FAMILY: "3"').replace('-mcpu=apple-a18', '-mcpu=apple-a15')
+     lines.append(line)
++    if tvos and s == '- ProfileName: ExtendedGamepad':
++        pad = line[:ind]
++        lines += [f'{pad}- ProfileName: DirectionalGamepad', f'{pad}- ProfileName: MicroGamepad']
+ if not done: sys.exit('[RED] project-shell.yml has no @FRAMEWORKS@ line')
+ open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
+ PY
+@@ -98,6 +134,21 @@ COMMIT=$(git -C "$DM" rev-parse --short=12 HEAD 2> /dev/null) && { [ -z "$(git -
+   /usr/libexec/PlistBuddy -c "Add :DMCommit string $COMMIT" Gen/Info.plist > /dev/null || die "DMCommit"; t "source: $COMMIT"; }
+ /usr/libexec/PlistBuddy -c "Add :DMChain string $V" Gen/Info.plist > /dev/null || die "DMChain"
+ /usr/libexec/PlistBuddy -c "Add :DMForkPatches string $DM_FORK_PATCHES" Gen/Info.plist > /dev/null || die "DMForkPatches"
++if [ -n "${DM_CLOUDKIT_CONTAINER:-}${DM_SAVE_BRIDGE_URL:-}${DM_SAVE_BRIDGE_FALLBACK_URL:-}${DM_SAVE_BRIDGE_TOKEN:-}" ]; then
++  python3 -I - Gen/Info.plist <<'PY' || die "save sync Info.plist keys"
++import os, plistlib, sys
++p = sys.argv[1]
++with open(p, 'rb') as f: d = plistlib.load(f)
++for env_k, plist_k in (('DM_CLOUDKIT_CONTAINER', 'DMCloudKitContainer'), ('DM_SAVE_BRIDGE_URL', 'DMSaveBridgeURL'), ('DM_SAVE_BRIDGE_FALLBACK_URL', 'DMSaveBridgeFallbackURL'), ('DM_SAVE_BRIDGE_TOKEN', 'DMSaveBridgeToken')):
++    v = os.environ.get(env_k, '').strip()
++    if v: d[plist_k] = v
++if os.environ.get('DM_SAVE_BRIDGE_URL', '').strip():
++    ats = dict(d.get('NSAppTransportSecurity') or {})
++    ats['NSAllowsLocalNetworking'] = True
++    d['NSAppTransportSecurity'] = ats
++with open(p, 'wb') as f: plistlib.dump(d, f)
++PY
++fi
+ if [ "$MODE" = --prepare-xcode ]; then
+   t "Xcode project: $S/DmShell.xcodeproj (scheme DmShell)"
+   t "Xcode derived data: $DD"
+@@ -105,11 +156,11 @@ if [ "$MODE" = --prepare-xcode ]; then
+   exit 0
+ fi
+ 
+-t "xcodebuild (Release, unsigned, iPhone + iPad)"
+-xcodebuild -project DmShell.xcodeproj -scheme DmShell -configuration Release -destination 'generic/platform=iOS' -derivedDataPath "$DD" \
++t "xcodebuild (Release, unsigned, $PLAT_LABEL)"
++xcodebuild -project DmShell.xcodeproj -scheme DmShell -configuration Release -destination "$XCODE_DEST" -derivedDataPath "$DD" \
+   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build > "$S/build.log" 2>&1 \
+   || { grep -E 'error:' "$S/build.log" | head -20; die "xcodebuild, log $S/build.log"; }
+-APP=$DD/Build/Products/Release-iphoneos/DmShell.app
++APP=$DD/Build/Products/Release-$XCODE_SDK/DmShell.app
+ [ -x "$APP/DmShell" ] || die "no built app at $APP"
+ while IFS=$'\t' read -r tid path name; do
+   fw=$APP/Frameworks/$(basename "$path"); [ -d "$fw" ] || die "the app does not embed $(basename "$path")"
+diff --git a/dm/ios/tools/gen_build.py b/dm/ios/tools/gen_build.py
+index 66a9d8b..9776d80 100644
+--- a/dm/ios/tools/gen_build.py
++++ b/dm/ios/tools/gen_build.py
+@@ -6,10 +6,12 @@
+ # Usage: gen_build.py <dm/host dir> <Gen dir>
+ import os, shlex, subprocess, sys
+ host, gen = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+-# Generate the game profile header and the host's shaders compiled for iOS (MSL_SDK=iphoneos: gen/msl-iphoneos, dm/gfx/tools/host_msl.py) for real first (make -n below only prints;
+-# GAME comes from the environment). The compile command is then the iOS one: its -I names the iOS shader header
+-subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', 'MSL_SDK=iphoneos'], check=True)
+-cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', 'MSL_SDK=iphoneos'], capture_output=True, text=True, check=True).stdout
++tvos = os.environ.get('DM_PLATFORM') == 'tvos'
++msl_sdk = 'appletvos' if tvos else 'iphoneos'
++# Generate the game profile header and the host's shaders compiled for iOS/tvOS (MSL_SDK=iphoneos|appletvos, dm/gfx/tools/host_msl.py) for real first (make -n below only prints;
++# GAME comes from the environment). The compile command is then the target one: its -I names the target shader header
++subprocess.run(['make', '-s', '-C', host, 'game_profile', 'host_msl', f'MSL_SDK={msl_sdk}'], check=True)
++cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost', f'MSL_SDK={msl_sdk}'], capture_output=True, text=True, check=True).stdout
+ # The host's own link command (-o dmhost) first, then the per-file compile commands of the libraries it depends on (libvpx): header paths keep this order, so the host's headers are found first
+ lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]
+ lines.sort(key=lambda t: 'dmhost' not in t)
+@@ -41,4 +43,5 @@ for s in srcs:
+     os.symlink(s, f'{gen}/src/{flat}')
+ print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
+ print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
+-print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
++skip_fw = {'Cocoa', 'WebKit', 'IOKit'} if tvos else {'Cocoa'}
++print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f not in skip_fw))
+diff --git a/dm/mac/pack_app.py b/dm/mac/pack_app.py
+index 96b6119..77ec5f6 100755
+--- a/dm/mac/pack_app.py
++++ b/dm/mac/pack_app.py
+@@ -93,11 +93,11 @@ def swift_sources():   # the settings window, with the iOS launcher's model and
+ 
+ def build_launcher(out, minos, clang, swiftc, sdk):   # launcher.c's main and the host's cloud-save code (its send after the host exits), linked by swiftc with the settings window (no Swift main: -parse-as-library)
+     with tempfile.TemporaryDirectory(dir=out.parents[3]) as t:
+-        objs = [Path(t) / 'launcher.o', Path(t) / 'save_sync.o']
+-        for obj, src in zip(objs, (HERE / 'launcher.c', HERE.parent / 'host/save_sync.c')):
+-            run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-I', HERE.parent / 'host', '-c', '-o', obj, src])
++        objs = [Path(t) / 'launcher.o', Path(t) / 'save_sync.o', Path(t) / 'save_sync_remote.o']
++        for obj, src, extra in zip(objs, (HERE / 'launcher.c', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync_remote.m'), ([], [], ['-fobjc-arc'])):
++            run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', *extra, '-I', HERE.parent / 'host', '-c', '-o', obj, src])
+         run([swiftc, '-sdk', sdk, '-target', f'arm64-apple-macos{minos}', '-O', '-swift-version', '5', '-parse-as-library', '-module-cache-path', Path(t) / 'module-cache',
+-             '-o', out, *swift_sources(), *objs, '-framework', 'CoreFoundation', '-framework', 'AppKit', '-framework', 'SwiftUI'])
++             '-o', out, *swift_sources(), *objs, '-framework', 'CoreFoundation', '-framework', 'CloudKit', '-framework', 'AppKit', '-framework', 'SwiftUI'])
+ 
+ 
+ def make_icns(jpg, out):   # the game's icon (256x256 JPEG) at every size an .icns holds
+@@ -293,7 +293,7 @@ def pack(a):
+         if not codesign: raise SystemExit('codesign is not available')
+         codesign = Path(codesign).resolve()
+         minos = min_os(a.host)
+-        sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py'] + swift_sources()
++        sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/input_map.h', HERE.parent / 'host/dm_input.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync_remote.m', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py'] + swift_sources()
+         inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + sources],
+                   'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.romfs and f'{a.romfs}.id', a.aoc, a.html, *(str(x[1]) for x in programs), *(str(x[3]) for x in programs)) if p and Path(p).exists()],
+                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index 2d88a22..56f5c1c 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -1346,7 +1346,7 @@ def check_capstone():   # patch_nso.py checks the same, but only at the rewrite
+         raise BuildError(f'Capstone {capstone.__version__} is unsupported; the rewriter requires Capstone 5.x. Run: {cmd}')
+ 
+ 
+-def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'mac'), which needs no xcodegen and compiles shaders only for macOS
++def check_prereqs(env, xlate, mac=False, tvos=False):   # mac: a Mac-only build (PLATFORM 'mac'), which needs no xcodegen and compiles shaders only for macOS
+     missing = [m for m in ('lz4.block', 'capstone', 'fontTools', 'zbic') if not _importable(m)] + ([] if _importable('compression.zstd') or _importable('backports.zstd') else ['backports.zstd'])   # zstd: built in from Python 3.14. zbic: a system 22.0.0+ module's segments, which only the rewrite reads, after the whole game is unpacked
+     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 "capstone>=5,<6" fonttools zbic backports.zstd; backports.zstd only before Python 3.14)')
+     check_capstone()
+@@ -1354,8 +1354,10 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
+     if mac: del tools['xcodegen']
+     gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
+     if gone: raise BuildError('tools not found: ' + ', '.join(gone))
+-    if not mac: check_ios_sdk(env)   # before the Metal check, whose message would blame the Metal toolchain
+-    mtl = subprocess.run(['xcrun', '-sdk', 'macosx' if mac else 'iphoneos', 'metal', '--version'], capture_output=True, text=True, env=env)   # Xcode 26 and later install the Metal toolchain separately
++    if tvos: check_tvos_sdk(env)
++    elif not mac: check_ios_sdk(env)   # before the Metal check, whose message would blame the Metal toolchain
++    mtl_sdk = 'macosx' if mac else 'appletvos' if tvos else 'iphoneos'
++    mtl = subprocess.run(['xcrun', '-sdk', mtl_sdk, 'metal', '--version'], capture_output=True, text=True, env=env)   # Xcode 26 and later install the Metal toolchain separately
+     if mtl.returncode: raise BuildError(f'the Metal compiler does not run ({(mtl.stderr.strip().splitlines() or ["no output"])[-1]}): install it with xcodebuild -downloadComponent MetalToolchain')
+     if not xlate.exists(): raise BuildError(f'the shader translator is missing from the repository: {xlate}')
+     check_translator(xlate, env)
+@@ -1363,6 +1365,13 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
+     if not shutil.which(sc, path=env.get('PATH')): raise BuildError(f'spirv-cross is missing or not executable: {sc}')
+ 
+ 
++def check_tvos_sdk(env):
++    if subprocess.run(['xcrun', '--sdk', 'appletvos', '--show-sdk-version'], capture_output=True, text=True, env=env).returncode == 0: return
++    dev = subprocess.run(['xcode-select', '-p'], capture_output=True, text=True, env=env).stdout.strip()
++    if 'CommandLineTools' in dev: raise BuildError(f'the selected developer folder is the Command Line Tools ({dev}), which have no tvOS SDK: select Xcode with sudo xcode-select -s /Applications/Xcode.app')
++    raise BuildError('the tvOS SDK is not installed: install the tvOS platform in Xcode → Settings → Components, or with xcodebuild -downloadPlatform tvOS')
++
++
+ def check_ios_sdk(env):   # the iOS platform is a separate download in Xcode's Components; xcodebuild, the Metal toolchain and the macOS SDK can be there without it
+     if subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], capture_output=True, text=True, env=env).returncode == 0: return
+     dev = subprocess.run(['xcode-select', '-p'], capture_output=True, text=True, env=env).stdout.strip()
+@@ -2170,12 +2179,12 @@ def lib_head(lib):
+     return f'# chain {shader_lib.name_of(lib)} inputs {stamp["inputs"]}' if stamp.get('inputs') else None
+ 
+ 
+-def chain_tables(py, repo, sh, env, logs, g, chain):
++def chain_tables(py, repo, sh, env, logs, g, chain, mac_dir=None):
+     """c1_full.tsv (c1_guard.py: shaders whose c1 reads are not proven bounded) and cb_extent.tsv (cb_extent.py: how far each shader reads into its uniform blocks) from the Mac outputs of the
+     shader build (sh/cache/b-<chain>/), into the profile folder. They are not in the repository (git ignores them): they follow from the shaders this Mac built, so every pack makes its own.
+     A full dmsh_build.py run makes both; this makes those missing or not naming the library's stamp again, which the host would ignore (every c1 its own 64 KiB, whole uniform bindings
+     copied; GitHub issue #78). True when both name it; False when the library has no stamp (no full build's Mac outputs to make them from)"""
+-    lib = sh / 'cache' / f'b-{chain}'
++    lib = (mac_dir or sh / 'cache') / f'b-{chain}'
+     want = lib_head(lib)
+     if not want: return False
+     for name, tool, step in CHAIN_TABLES:
+@@ -2569,9 +2578,10 @@ def spirv_cross(repo, env=None):   # resolve the same selection the shader tools
+     return Path(shutil.which(selected, path=env.get('PATH')) or selected)
+ 
+ 
+-def toolchain(repo, env=None):   # Metal is a separate Xcode download: its version and SDK must invalidate reuse too
++def toolchain(repo, env=None, tvos=False):   # Metal is a separate Xcode download: its version and SDK must invalidate reuse too
++    dev_sdk = 'appletvos' if tvos else 'iphoneos'
+     return (('cmd', ['xcodebuild', '-version']), ('files', [spirv_cross(repo, env)]),
+-            *(('cmd', ['xcrun', '-sdk', sdk, *args]) for sdk in ('macosx', 'iphoneos')
++            *(('cmd', ['xcrun', '-sdk', sdk, *args]) for sdk in ('macosx', dev_sdk)
+               for args in (['metal', '--version'], ['metallib', '--version'], ['--show-sdk-version'], ['--show-sdk-build-version'])))
+ 
+ 
+@@ -2583,8 +2593,8 @@ def prune_stale_chains(sh, chain):
+     b-<12 hex digits> go (the key files with .key, the Mac's with a mac- prefix), never another entry. A removal that fails is a [RED] line, not an error: the build is done, and the next one tries
+     again. Returns the chain versions removed"""
+     def listing(d, pat): return [d / n for n in (os.listdir(d) if d.is_dir() else []) if re.fullmatch(pat, n) and n not in (f'b-{chain}', f'b-{chain}.img', f'b-{chain}.key', f'mac-b-{chain}.key')]
+-    old = [p for d in (sh / 'cache', sh / 'ios') for p in listing(d, r'b-[0-9a-f]{12}') if p.is_dir()]
+-    old += [p for d, pat in ((sh / 'ios', r'b-[0-9a-f]{12}\.key'), (sh, r'mac-b-[0-9a-f]{12}\.key'), (sh / 'cache', r'b-[0-9a-f]{12}\.img(\.part)?'), (sh / 'ios', r'b-[0-9a-f]{12}\.img(\.part)?')) for p in listing(d, pat) if p.is_file()]
++    old = [p for d in (sh / 'cache', sh / 'tvos_cache', sh / 'ios', sh / 'tvos') for p in listing(d, r'b-[0-9a-f]{12}') if p.is_dir()]
++    old += [p for d, pat in ((sh / 'ios', r'b-[0-9a-f]{12}\.key'), (sh / 'tvos', r'b-[0-9a-f]{12}\.key'), (sh, r'mac-b-[0-9a-f]{12}\.key'), (sh / 'cache', r'b-[0-9a-f]{12}\.img(\.part)?'), (sh / 'tvos_cache', r'b-[0-9a-f]{12}\.img(\.part)?'), (sh / 'ios', r'b-[0-9a-f]{12}\.img(\.part)?'), (sh / 'tvos', r'b-[0-9a-f]{12}\.img(\.part)?')) for p in listing(d, pat) if p.is_file()]
+     gone, size = [], 0
+     for p in old:
+         try: n = tree_size(p)[1] if p.is_dir() else p.stat().st_size; rmtree(p)
+@@ -2636,11 +2646,11 @@ def stale_shaders(py, repo, env, lib_dirs, chain, g):
+     return None
+ 
+ 
+-def pack_libraries(sh, chain, pull=None):
++def pack_libraries(sh, chain, pull=None, dev_dir='ios', mac_dir=None):
+     """Each finished library folder as one file, which the host and the tools read in place (shader_lib.py). pull False: nothing reads the iPhone's pulling libraries (ios_wants_pulling), which stay out of its
+     image, so the IPA packs that file as it is and reuses it. A build that wants them again compiles them"""
+-    shader_lib.pack(sh / 'cache' / f'b-{chain}', say)
+-    shader_lib.pack(sh / 'ios' / f'b-{chain}', say, leave_out=pull is False)
++    shader_lib.pack((mac_dir or sh / 'cache') / f'b-{chain}', say)
++    shader_lib.pack(sh / dev_dir / f'b-{chain}', say, leave_out=pull is False)
+ 
+ 
+ def ios_gpus(gpu_option, g):
+@@ -2656,8 +2666,8 @@ def ios_wants_pulling(g, gpus, prepare_xcode, env):
+     return (env.get('IOS_PULL') or ('1' if g.get('pso_mtl4', 'off') == 'on' else '0')) == '1'
+ 
+ 
+-def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, seen=None, pull=None):
+-    """The iOS shader libraries (dmsh_build.py, which also builds the Mac's into sh/cache when the build wants them), or with mac only the Mac's (a Mac-only build: no IOSOUT). Returns the folder the host takes
++def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, seen=None, pull=None, tvos=False):
++    """The iOS/tvOS shader libraries (dmsh_build.py, which also builds the Mac's into sh/cache when the build wants them), or with mac only the Mac's (a Mac-only build: no IOSOUT). Returns the folder the host takes
+     them from. Reused when the shader package (pkg_key, its content; None never reuses) and the chain's tools, translator binaries, profile and compilers are as at the last successful build:
+     dmsh_build.py would only restore every shader from its cache (63,000 for Breath of the Wild: about 100 s). The key of the iOS libraries is sh/ios/b-<chain>.key, that of the Mac's
+     sh/mac-b-<chain>.key (not in sh/cache, whose b-* entries dmsh_build.py reads as library folders). Each target writes only its own key (an iOS build that keeps a Mac build's libraries, both); either is taken only
+@@ -2669,38 +2679,38 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
+     per-shader cache (DMSH_CAS) is the full build's, so a later full build reuses this work. It gets no stamp and no c1_full.tsv or cb_extent.tsv, on purpose: beside a stamp the host would take the tables'
+     silence on a shader the partial build never saw as proof it is safe (no chain_tables, no shader_regressions, no pruning; the host logs the missing stamp in red at each start)
+     pull: an iPhone build's ios_wants_pulling. False neither compiles the pulling libraries nor keeps them in its image; True does not reuse an image without them"""
+-    ios, log, cas = sh / 'ios', logs / 'dmsh_build.log', sh / 'cache/cas.db'
+-    shader_cache.adopt(sh / 'cache/cas', cas, say)
+-    PROG.stage('Mac shaders' if mac else 'iOS shaders')
++    dev_dir = 'tvos' if tvos else 'ios'
++    mac_cache = sh / ('tvos_cache' if tvos else 'cache')
++    ios, log, cas = sh / dev_dir, logs / ('dmsh_build_tvos.log' if tvos else 'dmsh_build.log'), mac_cache / 'cas.db'
++    if tvos: mac_cache.mkdir(parents=True, exist_ok=True)
++    else: shader_cache.adopt(sh / 'cache/cas', cas, say)
++    PROG.stage('Mac shaders' if mac else 'tvOS shaders' if tvos else 'iOS shaders')
+     chain = chain_of(repo)
+-    out = sh / 'partial' if seen else sh / 'cache' if mac else ios
++    out = sh / 'partial' if seen else mac_cache if mac else ios
+     libs, kf, kmac = out / f'b-{chain}', ios / f'b-{chain}.key', out / 'key' if seen else sh / f'mac-b-{chain}.key'
+     pso_pairs = g.table('pso_pairs.tsv')
+     if not pso_pairs.is_file(): pso_pairs = sh / 'pso_pairs.tsv'   # the split's copy is a shader input too (vs_pad)
+     if pkg_key:
+         PROG.set(step='checking the inputs')
+-        key = fingerprint(pkg_key, ('files', chain_files(repo)), ('stat', xlate.parent), ('files', profile_files(g)), ('files', [pso_pairs]), *toolchain(repo, env), str(xlate),
+-                          {k: env.get(k) for k in ('XLATE_DEBUG', 'XLATE_REDUCED')}, *((seen,) if seen else ()), env=env)
++        key = fingerprint(pkg_key, ('files', chain_files(repo)), ('stat', xlate.parent), ('files', profile_files(g)), ('files', [pso_pairs]), *toolchain(repo, env, tvos=tvos), str(xlate),
++                          {k: env.get(k) for k in ('XLATE_DEBUG', 'XLATE_REDUCED')}, *(('tvos',) if tvos else ()), *((seen,) if seen else ()), env=env)
+         note = next((n for k in ((kmac,) if seen else (kmac, kf) if mac else (kf,)) if (n := reused(k, key)) is not None), None)
+         # the libraries are the last build's, so are tables that name their stamp; a missing or stale one is made from that build's Mac outputs, and without them the step runs again
+         lost_pull = pull and not mac and not seen and shader_lib.left_out_pulling(libs)   # now this app reads them: --gpu, the profile's pso_mtl4, IOS_PULL or --prepare-xcode changed
+         if lost_pull: say('the app now needs the pulling vertex libraries, which this image left out: building them')
+-        if shader_lib.has_library(libs) and note is not None and not lost_pull and (seen or chain_tables(py, repo, sh, env, logs, g, chain)):
+-            if not seen: prune_stale_chains(sh, chain); prune_shader_cache(sh, chain); pack_libraries(sh, chain, None if mac else pull)   # folders from before this become the one file here
++        if shader_lib.has_library(libs) and note is not None and not lost_pull and (seen or chain_tables(py, repo, sh, env, logs, g, chain, mac_dir=mac_cache) or (tvos and chain_tables(py, repo, sh, env, logs, g, chain))):
++            if not seen:
++                prune_stale_chains(sh, chain)
++                if not tvos: prune_shader_cache(sh, chain)
++                pack_libraries(sh, chain, None if mac else pull, dev_dir=dev_dir, mac_dir=mac_cache)   # folders from before this become the one file here
+             PROG.end(f'{note}, reused (inputs unchanged)'); return out
+     else: key = None
+-    rmtree(kmac)
++    if not tvos: rmtree(kmac)
+     if not mac: rmtree(kf)
+     if seen: rmtree(out)   # what a run leaves is what it built; its keys are in partial-keys.txt
+-    # The Metal work follows from what the build produces: an iPhone build needs only the iOS libraries (the macOS
+-    # metallibs are about half of the compile and never enter the IPA), a Mac build only the Mac's, and a build that
+-    # wants both compiles both. The Mac sources and reflection are written either way (c1_full / cb_extent come from them).
+-    # An iPhone build of a folder that holds this chain's Mac libraries (a --platform mac build, whose run command takes
+-    # them from there) builds them again too: a full dmsh_build.py run removes every output of the folder first, so that
+-    # a stale key keeps no old library, and restores only the targets it builds. The Metal compile cache gives back every
+-    # library whose MSL was compiled before.
+-    keep_mac = not mac and shader_lib.has_library(sh / 'cache' / f'b-{chain}')
++    keep_mac = not mac and not tvos and shader_lib.has_library(sh / 'cache' / f'b-{chain}')
+     benv = dict(env, XLATE=str(xlate), IOSOUT=str(ios), DMSH_TARGETS='mac' if mac else 'mac,ios' if keep_mac else 'ios')
++    if tvos: benv['DM_SHADER_SDK'] = 'appletvos'; benv['DMSH_CAS'] = str(cas)
+     if ALLOW_OTHER_METAL: benv['DM_ALLOW_OTHER_METAL'] = '1'
+     if mac: del benv['IOSOUT']   # dmsh_build.py builds the iOS libraries only with IOSOUT
+     elif pull is False: benv['DMSH_IOS_PULL'] = '0'   # nothing in this app reads them
+@@ -2708,7 +2718,7 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
+     prog = sh / 'progress.json'; rmtree(prog); benv['DMSH_PROGRESS'] = str(prog)   # dmsh_build.py's progress (ShaderWatch)
+     try: PROG.watch(ShaderWatch(prog))
+     except Exception: pass   # progress never stops the build
+-    try: stale = None if seen else stale_shaders(py, repo, env, [sh / 'cache'] if mac else [sh / 'cache', ios] if keep_mac else [ios], chain, g)
++    try: stale = None if seen else stale_shaders(py, repo, env, [mac_cache] if mac else [mac_cache, ios] if keep_mac else [ios], chain, g)
+     except Exception: stale = None   # a note never stops the build
+     if stale:
+         reason, old, new, n = stale
+@@ -2718,12 +2728,12 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
+     if mac and not seen and g.table('shader_seen.tsv').is_file():
+         say(f'building the whole shader map, {len(shader_keys(g)):,} shaders: hours for a large one the first time. --seen-shaders builds only the {len(seen_listed(g)):,} the profile\'s playtests used, in minutes; areas they do not cover then draw incomplete')
+     if not seen:   # the run's folder replaces the library: a stopped build keeps no old shaders under the same chain, as dmsh_build.py removes a folder's
+-        shader_lib.remove_image(sh / 'cache' / f'b-{chain}')
++        shader_lib.remove_image(mac_cache / f'b-{chain}')
+         if not mac: shader_lib.remove_image(ios / f'b-{chain}')
+-    run([py, repo / 'dm/gfx/tools/own_compilers.py', sh / 'pkg', out if seen else sh / 'cache', *(seen or ())], log, env=benv)
++    run([py, repo / 'dm/gfx/tools/own_compilers.py', sh / 'pkg', out if seen else mac_cache, *(seen or ())], log, env=benv)
+     PROG.watch(None)
+-    if not seen and not chain_tables(py, repo, sh, env, logs, g, chain): raise BuildError(f'no stamped Mac shader outputs in {sh / "cache" / f"b-{chain}"} (inputs.tsv): dmsh_build.py did not finish a full build')
+-    what = 'Mac' if mac else 'iOS'
++    if not seen and not chain_tables(py, repo, sh, env, logs, g, chain, mac_dir=mac_cache): raise BuildError(f'no stamped Mac shader outputs in {mac_cache / f"b-{chain}"} (inputs.tsv): dmsh_build.py did not finish a full build')
++    what = 'Mac' if mac else 'tvOS' if tvos else 'iOS'
+     n = sum(1 for _ in shader_lib.view(libs).glob('*_b.metallib')) if shader_lib.exists(libs) else 0   # the image dmsh_build.py writes (a folder from an older chain)
+     if n == 0: raise BuildError(f'no {what} shader libraries in {libs}')
+     say(f'{n} {what} shader libraries ({libs})')
+@@ -2739,11 +2749,13 @@ def build_shaders(py, repo, sh, xlate, env, logs, g, pkg_key=None, mac=False, se
+         note = f'{ok:,} of {total:,} shaders ready{failed}'
+         PROG.end(f'{ok:,} of {total:,} shaders ready' + (f' ({int(c.group(1)):,} from the cache)' if c else '') + failed)
+     else: PROG.end()
+-    if not seen: shader_regressions(py, repo, sh / 'cache', chain, logs)   # before the key: a stopped build is checked again on the next run
++    if not seen: shader_regressions(py, repo, mac_cache, chain, logs)   # before the key: a stopped build is checked again on the next run
+     if key:
+         for k in (kmac,) if mac else (kf, kmac) if keep_mac else (kf,): k.write_text(f'{key}\n{note}\n')
+     if not seen:   # last: a build that stopped before here keeps the old libraries and cache entries
+-        prune_stale_chains(sh, chain); prune_shader_cache(sh, chain); pack_libraries(sh, chain, None if mac else pull)
++        prune_stale_chains(sh, chain)
++        if not tvos: prune_shader_cache(sh, chain)
++        pack_libraries(sh, chain, None if mac else pull, dev_dir=dev_dir, mac_dir=mac_cache)
+         if mac: rmtree(sh / 'partial')   # the whole library replaces a partial one; partial-keys.txt stays
+     return out
+ 
+@@ -2776,45 +2788,47 @@ def shader_regressions(py, repo, lib_dir, chain, logs):
+                      'ALLOW_SHADER_REGRESSIONS = True (--allow-shader-regressions) packs the app without those shaders')
+ 
+ 
+-def layer_shaders(py, repo, api, name, roots, sh, key, logs, env, mac):
+-    """What build_vk_shaders and build_gl_shaders share: dm/gfx/tools/<api>_shaders.py on the roots → sh/<api>/ for the Mac and, unless mac (a Mac-only build), sh/ios/<api>/ for the iPhone.
++def layer_shaders(py, repo, api, name, roots, sh, key, logs, env, mac, tvos=False):
++    """What build_vk_shaders and build_gl_shaders share: dm/gfx/tools/<api>_shaders.py on the roots → sh/<api>/ for the Mac and, unless mac (a Mac-only build), sh/ios/<api>/ for the iPhone (or sh/tvos/<api>/ for Apple TV).
+     Returns the folder the host (DM_MSL_DIR) or build_ipa.sh (MSL_IOS) takes the libraries from. key: the inputs' fingerprint (None never reuses). The iOS libraries' key is sh/ios/<api>.key,
+     the Mac's sh/<api>.key, which an iOS build writes too (it builds both), so a Mac-only build is reused after either; an iOS build after a Mac-only one translates again.
+     Otherwise the old output is deleted first, so a failed run leaves nothing for build_ipa.sh or the host to pick up; the translator's temporary files go to WORK (on the NSP folder's volume)"""
+-    ios = sh / 'ios'; out = sh if mac else ios
+-    kf, kmac, lib, log = ios / f'{api}.key', sh / f'{api}.key', out / api / f'{api}_shaders.metallib', logs / f'{api}_shaders.log'
++    dev = sh / ('tvos' if tvos else 'ios'); out = sh if mac else dev
++    kf, kmac, lib, log = dev / f'{api}.key', sh / f'{api}.key', out / api / f'{api}_shaders.metallib', logs / f'{api}_shaders{"_tvos" if tvos else ""}.log'
+     note = next((n for k in ((kmac, kf) if mac else (kf,)) if (n := reused(k, key)) is not None), None) if key else None
+     if lib.is_file() and note is not None:
+         PROG.end(f'{note}, reused (inputs unchanged)'); return out
+     PROG.set(step='translating')
+     rmtree(kmac); rmtree(sh / api)
+-    if not mac: rmtree(kf); rmtree(ios / api)
+-    run([py, repo / f'dm/gfx/tools/{api}_shaders.py', *roots, sh] + ([] if mac else ['--ios', ios]), log, env=dict(env, TMPDIR=env['WORK']))
+-    if not lib.is_file(): raise BuildError(f'no {"Mac" if mac else "iOS"} {name} shader library in {lib.parent}')
+-    m = re.search(r'macosx: (\d+)' if mac else r'iphoneos: (\d+)', log.read_text(errors='replace'))
+-    note = f'{int(m.group(1)):,} shaders for the Mac' + ('' if mac else ' and iOS') if m else ''
++    if not mac: rmtree(kf); rmtree(dev / api)
++    flag = [] if mac else ['--tvos', dev] if tvos else ['--ios', dev]
++    run([py, repo / f'dm/gfx/tools/{api}_shaders.py', *roots, sh] + flag, log, env=dict(env, TMPDIR=env['WORK']))
++    what = 'Mac' if mac else 'tvOS' if tvos else 'iOS'
++    if not lib.is_file(): raise BuildError(f'no {what} {name} shader library in {lib.parent}')
++    m = re.search(r'macosx: (\d+)' if mac else r'appletvos: (\d+)' if tvos else r'iphoneos: (\d+)', log.read_text(errors='replace'))
++    note = f'{int(m.group(1)):,} shaders for the Mac' + ('' if mac else f' and {what}') if m else ''
+     if key:
+         for k in (kmac,) if mac else (kf, kmac): k.write_text(f'{key}\n{note}\n')
+     PROG.end(note)
+     return out
+ 
+ 
+-def build_vk_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, provisional=False):
++def build_vk_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, provisional=False, tvos=False):
+     """A Vulkan game's SPIR-V shaders (roots: the RomFS, and a run-time capture folder) → one Metal library each for the Mac (sh/vk/) and the iPhone (sh/ios/vk/, what build_ipa.sh takes from MSL_IOS;
+     not with mac), replacing the NVN split and chain build (layer_shaders). Reused when the roots (paths and sizes), the tools, the profile and the compilers are as at the last successful run (reuse False: never)"""
+     PROG.stage('Vulkan shaders', step='checking the inputs')
+-    key = fingerprint(*[('stat' if provisional else 'tree', r) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env), env=env) if reuse else None
+-    return layer_shaders(py, repo, 'vk', 'Vulkan', roots, sh, key, logs, env, mac)
++    key = fingerprint(*[('stat' if provisional else 'tree', r) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env, tvos=tvos), *(('tvos',) if tvos else ()), env=env) if reuse else None
++    return layer_shaders(py, repo, 'vk', 'Vulkan', roots, sh, key, logs, env, mac, tvos=tvos)
+ 
+ 
+-def build_gl_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, provisional=False):
++def build_gl_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, provisional=False, tvos=False):
+     """An OpenGL game's GLSL sources (roots: the RomFS, main, a run-time capture folder) → one Metal library each for the Mac (sh/gl/) and the iPhone (sh/ios/gl/, what build_ipa.sh takes from MSL_IOS;
+     not with mac), replacing the NVN split and chain build, as build_vk_shaders does for a Vulkan game; glslang (glslangValidator) compiles the GLSL to SPIR-V for spirv-cross"""
+     PROG.stage('GL shaders', step='checking the inputs')
+     if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (brew install glslang): it compiles an OpenGL game\'s GLSL shaders')
+-    key = fingerprint(*[('stat' if provisional else 'tree', r) if Path(r).is_dir() else ('files', [r]) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env),
++    key = fingerprint(*[('stat' if provisional else 'tree', r) if Path(r).is_dir() else ('files', [r]) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env, tvos=tvos), *(('tvos',) if tvos else ()),
+                       ('cmd', ['glslangValidator', '--version']), env=env) if reuse else None
+-    return layer_shaders(py, repo, 'gl', 'GL', roots, sh, key, logs, env, mac)
++    return layer_shaders(py, repo, 'gl', 'GL', roots, sh, key, logs, env, mac, tvos=tvos)
+ 
+ 
+ class IpaWatch:
+@@ -2823,8 +2837,8 @@ class IpaWatch:
+     writing (<IPA>.partial, renamed at the end). Its two halves are the stages "app build" and "IPA pack" """
+     XCODE = {'CompileC': 'compiling', 'Ld': 'linking', 'CpResource': 'copying resources', 'CompileAssetCatalogVariant': 'asset catalog', 'ProcessInfoPlistFile': 'Info.plist'}
+ 
+-    def __init__(self, repo, w, out_ipa):
+-        self.ios, self.o, self.part = repo / 'dm/ios', w / 'build/ios/pkg', out_ipa.with_name(out_ipa.name + '.partial')
++    def __init__(self, repo, w, out_ipa, plat_dir='ios'):
++        self.ios, self.o, self.part = repo / 'dm/ios', w / f'build/{plat_dir}/pkg', out_ipa.with_name(out_ipa.name + '.partial')
+         self.last = out_ipa.stat().st_size if out_ipa.is_file() else None   # the last IPA's size: the expected size of the new archive
+         self.kept = 0
+         self.state, self.t, self.off, self.compiled, self.what, self.total, self.most, self.lock = None, 0, 0, 0, '', None, 0, threading.Lock()
+@@ -3082,7 +3096,7 @@ def parse_args(argv):
+     ap.add_argument('--shell-framework', metavar='FOLDER', help='route C\'s shell (docs/launcher-c-plan.md M2): build only the game\'s framework, FOLDER/DmGame<title ID>.framework '
+                     '(its code, tables, settings list, shader libraries and icon), for dm/ios/tools/build_shell.sh to embed in the one app for all games; no IPA or Xcode project, '
+                     'the game files stay separate (implies --romfs separate and --keep-extracted)')
+-    ap.add_argument('--platform', choices=('ios', 'mac', 'mac-app'), help='ios = the IPA (or the Xcode project); mac = for development: build only what running the game on this Mac needs (the Mac shaders and the Mac host, '
++    ap.add_argument('--platform', choices=('ios', 'tvos', 'mac', 'mac-app'), help='ios = the IPA (or the Xcode project); tvos = Apple TV framework/IPA; mac = for development: build only what running the game on this Mac needs (the Mac shaders and the Mac host, '
+                     'no iOS shaders, Xcode project or IPA), keep the extracted files and print the command that runs the game; mac-app = what mac builds, then a self-contained, double-clickable '
+                     'Mac app of the game (default: <game name>.app in the NSP folder, -o names another) (default: the PLATFORM setting, ios)')
+     ap.add_argument('--mac-sign', help='--platform mac-app: the codesign identity for the app, e.g. "Developer ID Application: <name> (<team>)" (default: the MAC_SIGN setting, else ad-hoc)')
+@@ -3204,7 +3218,8 @@ def main(args=None):
+     repo = find_repo(here)
+     prepare_xcode = args.prepare_xcode or PREPARE_XCODE
+     platform = args.platform or PLATFORM
+-    if platform not in ('ios', 'mac', 'mac-app'): raise BuildError(f'PLATFORM / --platform must be ios, mac or mac-app: {platform}')
++    if platform not in ('ios', 'tvos', 'mac', 'mac-app'): raise BuildError(f'PLATFORM / --platform must be ios, tvos, mac or mac-app: {platform}')
++    tvos = platform == 'tvos'
+     mac = platform in ('mac', 'mac-app')   # the Mac's shaders and host only: no iOS shaders, Xcode project or IPA (mac_run prints the command; mac-app packs a Mac app, mac_app)
+     mac_pack = platform == 'mac-app'
+     seen_shaders = SEEN_SHADERS if args.seen_shaders is None else args.seen_shaders
+@@ -3372,7 +3387,7 @@ def main(args=None):
+     # DM_GAME picks the profile; DM_ROOT / WORK point at <id>_build: the tools' default paths and temporary directories all stay inside it
+     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
+     logs = work / 'logs'
+-    check_prereqs(env, xlate, mac)
++    check_prereqs(env, xlate, mac, tvos)
+     picks = pick_nsps(fam, have, versions)
+ 
+     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
+@@ -3418,7 +3433,7 @@ def main(args=None):
+     if gfx == 'vulkan': say(f'Vulkan game ({src["graphics"][1]}): vk_shaders.py translates the shaders instead of the NVN shader chain')
+     if gfx == 'gl': say(f'OpenGL game ({src["graphics"][1]}): gl_shaders.py translates the shaders instead of the NVN shader chain')
+     if seen_shaders and gfx != 'nvn': raise BuildError(f'--seen-shaders is for NVN games: this one is {gfx}, whose shaders build whole in minutes')
+-    if gfx == 'nvn': check_metal(py, repo, env)   # before the captures and the shader split, which take minutes
++    if gfx == 'nvn': check_metal(py, repo, dict(env, DM_SHADER_SDK='appletvos') if tvos else env)   # before the captures and the shader split, which take minutes
+     for on, k in ((glslc, 'glslc_capture'), (vkcap, 'vk_capture'), (glcap, 'gl_capture'), (uedec, 'ue_decode'), (gfx == 'nvn' and src['oodle_packs'][0], 'oodle_packs'), (gfx == 'nvn' and src['ue_legacy'][0], 'ue_legacy')):
+         if on: say(src[k][1])
+     PROG.add(glslc + vkcap + glcap + uedec + (gfx == 'nvn'))
+@@ -3463,10 +3478,10 @@ def main(args=None):
+     sh = work / 'shader'
+     if gfx == 'vulkan':   # the packed version's merged RomFS holds the SPIR-V files the game loads; a capture holds those it generates
+         cap = capture_shaders(repo, game, patched, work, env, logs, g, 'vk') if vkcap else None
+-        ios = build_vk_shaders(py, repo, [rfs.source(game)] + dlc_roms + ([cap] if cap else []), sh, env, logs, g, reuse=not ALLOW_DAMAGED, mac=mac, provisional=bool(provisional or derived))
++        ios = build_vk_shaders(py, repo, [rfs.source(game)] + dlc_roms + ([cap] if cap else []), sh, env, logs, g, reuse=not ALLOW_DAMAGED, mac=mac, provisional=bool(provisional or derived), tvos=tvos)
+     elif gfx == 'gl':   # the GLSL sources in the packed version's archives and in its main (the game compiles them at run time; the host finds each by the hash of its text), and a capture of those it puts together
+         cap = capture_shaders(repo, game, patched, work, env, logs, g, 'gl') if glcap else None
+-        ios = build_gl_shaders(py, repo, [rfs.source(game), game / 'ExeFS/main'] + dlc_roms + ([cap] if cap else []), sh, env, logs, g, reuse=not ALLOW_DAMAGED, mac=mac, provisional=bool(provisional or derived))
++        ios = build_gl_shaders(py, repo, [rfs.source(game), game / 'ExeFS/main'] + dlc_roms + ([cap] if cap else []), sh, env, logs, g, reuse=not ALLOW_DAMAGED, mac=mac, provisional=bool(provisional or derived), tvos=tvos)
+     else:
+         # Trinity packs and legacy Unreal paks: the split decodes them with the packed version's own decoder (Oodle, LZ5), in the Mac host built for the profile
+         oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] or src['ue_legacy'][0] else None
+@@ -3487,7 +3502,7 @@ def main(args=None):
+         pkey = split_shaders(py, repo, [rfs.source(dirs[v]) for v in sv], [dirs[v] / 'ExeFS/main' for v in sv], sh / 'pkg', env, logs, g, own, oodle, dlc_roms, derive_dlc, derive_compute)
+         if observed_glslc is not None: check_glslc_coverage(observed_glslc, g)
+         seen = seen_keys(g, sh, seen_logs(work, app)) if seen_shaders else None
+-        ios = build_shaders(py, repo, sh, xlate, env, logs, g, pkey, mac, seen, None if mac else ios_wants_pulling(g, ios_gpus((args.gpu or PSO_GPUS).strip(), g), prepare_xcode, env))
++        ios = build_shaders(py, repo, sh, xlate, env, logs, g, pkey, mac, seen, None if mac else ios_wants_pulling(g, ios_gpus((args.gpu or PSO_GPUS).strip(), g), prepare_xcode, env), tvos=tvos)
+     motion = MOTION if args.motion is None else args.motion
+     jit = uses_jit(game / 'ExeFS')
+     if jit and not mac and not mac_pack: capture_jit(py, repo, game, patched, work, env, logs, g)   # the iPhone runs no code made at run time: it serves the plugin's output from an image
+@@ -3527,8 +3542,11 @@ def main(args=None):
+     programs = other_programs(args, g)
+     if programs and romfs_mode == 'separate': raise BuildError('a game of several programs keeps its files in the app (ROMFS / --romfs bundle): Documents holds one RomFS image, one program\'s')
+     if not prepare_xcode and not shell_fw and free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
++    plat_w = 'tvos' if tvos else 'ipa'
++    plat_sub = 'tvos' if tvos else 'ios'
+     say('preparing the Xcode project' if prepare_xcode else f'building the game framework for the shell → {shell_fw}' if shell_fw else f'building the IPA → {out_ipa}')
+-    ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(rfs.source(game)), MSL_IOS=str(ios), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''), DM_XCODE_DERIVED_DATA=str(work / 'xcode-derived-data'), DM_TEAM_ID=team_id, DM_LANG=lang, CONTROL=str(control))
++    ipa_env = dict(env, GAME=g.id, W=str(work / plat_w), PATCHED=str(patched), ROMFS=str(rfs.source(game)), MSL_IOS=str(ios), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''), DM_XCODE_DERIVED_DATA=str(work / ('tvos-xcode-derived-data' if tvos else 'xcode-derived-data')), DM_TEAM_ID=team_id, DM_LANG=lang, CONTROL=str(control))
++    if tvos: ipa_env['DM_PLATFORM'] = 'tvos'
+     if prepare_xcode: ipa_env['DM_XCODE_PROJECT_DIR'] = str(project.parent)
+     if args.framework: ipa_env['DM_FRAMEWORK'] = '1'; say('route C: the game\'s modules go into DmIOS.app/Frameworks/DmGame.framework (DM_FRAMEWORK=1)')
+     separate = romfs_mode == 'separate'
+@@ -3577,9 +3595,9 @@ def main(args=None):
+         say('choose the game scheme in Xcode, select your Team and iPhone or iPad, then Run (Release)')
+         report_profile_status(g, reg, pkg_ver, derived, provisional, 'Xcode project', patched)
+         return
+-    watch = IpaWatch(repo, work / 'ipa', out_ipa)
++    watch = IpaWatch(repo, work / plat_w, out_ipa, plat_sub)
+     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"
+-    xcode_data = work / 'ipa/build/ios/pkg/dd'   # one file between builds (tree_tar.py); the app in it goes into the IPA, so it is packed after
++    xcode_data = work / f'{plat_w}/build/{plat_sub}/pkg/dd'   # one file between builds (tree_tar.py); the app in it goes into the IPA, so it is packed after
+     tree_tar.unpack(xcode_data, say)
+     run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
+     if not out_ipa.is_file(): raise BuildError(f'no IPA at {out_ipa}')

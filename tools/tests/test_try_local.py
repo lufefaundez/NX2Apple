@@ -16,7 +16,12 @@ def run(*args):
 
 
 def plist_keys(text):
-    return [re.sub(r'\$\{\{ steps\.ver\.outputs\.version \}\}', '$V', l.strip()) for l in text.splitlines() if l.strip().startswith('<key>')]
+    def norm(l):
+        s = re.sub(r'\$\{\{ steps\.ver\.outputs\.version \}\}', '$V', l.strip())
+        if s.startswith('<key>CFBundleLocalizations</key>'):
+            return '<key>CFBundleLocalizations</key>'
+        return s
+    return [norm(l) for l in text.splitlines() if l.strip().startswith('<key>')]
 
 
 class TryLocal(unittest.TestCase):

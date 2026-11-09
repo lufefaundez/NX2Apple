@@ -51,7 +51,13 @@ public struct EngineLaunchPlan: Equatable, Sendable {
         if isDirectory(dataAOC) { env["DM_AOC_DIR"] = dataAOC.path } else if isDirectory(ownAOC) { env["DM_AOC_DIR"] = ownAOC.path }
         env["DM_CHEATS"] = gdir.appendingPathComponent("cheats", isDirectory: true).path
         env["DM_FONT_DIR"] = appResources.appendingPathComponent("dm/font", isDirectory: true).path
-        if let cloud = game.cloudSavesURL { env["DM_SAVE_SYNC"] = cloud.path }
+        if let cloud = game.cloudSavesURL {
+            env["DM_SAVE_SYNC"] = cloud.path
+        } else if let target = game.saveSyncTarget, !target.isEmpty {
+            env["DM_SAVE_SYNC"] = target
+            if let fb = game.saveSyncFallback, !fb.isEmpty { env["DM_SAVE_SYNC_FALLBACK"] = fb }
+            if let tok = game.saveSyncToken, !tok.isEmpty { env["DM_SAVE_SYNC_TOKEN"] = tok }
+        }
         // The shell already showed its own settings, the per-game launcher screen stays out of the way.
         env["DM_LAUNCHER"] = "0"
         for (key, value) in game.environment { env[key] = value }

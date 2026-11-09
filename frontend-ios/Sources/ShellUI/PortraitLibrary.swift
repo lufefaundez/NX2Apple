@@ -89,6 +89,7 @@ struct PortraitLibrary: View, Equatable {
         GlassEffectContainer(spacing: 12) {
             ScrollViewReader { proxy in
                 Group {
+                    #if !os(tvOS)
                     if #available(iOS 27.1, macOS 27.1, *), tabletop {
                         ArrangementView {
                             VStack(spacing: 0) {
@@ -115,12 +116,29 @@ struct PortraitLibrary: View, Equatable {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .safeAreaBar(edge: .bottom, spacing: 0) { bottomBar }
                     }
+                    #else
+                    if expanded {
+                        VStack(spacing: 0) {
+                            expandedHero
+                            gridHeading
+                            gameScroll(includesHero: false)
+                        }
+                        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: heroCollapsed)
+                        .safeAreaBar(edge: .bottom, spacing: 0) { bottomBar }
+                    } else {
+                        gameScroll(includesHero: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .safeAreaBar(edge: .bottom, spacing: 0) { bottomBar }
+                    }
+                    #endif
                 }
                 .ignoresSafeArea(edges: tabletop ? [.bottom] : wide ? [.top, .bottom] : [.top, .leading, .trailing])
                 .onGeometryChange(for: Bool.self) { geometry in
+                    #if !os(tvOS)
                     if #available(iOS 27.1, macOS 27.1, *) {
                         return ShellLayout.divisionAxis(geometry.reservedRegions(kind: .division).first?.frame, in: geometry.size) == .horizontal
                     }
+                    #endif
                     return false
                 } action: { newValue in
                     withAnimation(reduceMotion ? nil : .smooth(duration: 0.35)) { tabletop = newValue }

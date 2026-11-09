@@ -77,13 +77,17 @@ public struct ControllersView: View {
                         hint(ButtonGlyph(role: .controllers), ShellStrings.text("Controllers"))
                     }
                     .listRowBackground(Color.clear)
+                    #if !os(tvOS)
                     .listRowSeparator(.hidden)
+                    #endif
                 } header: {
                     Text(ShellStrings.text("On a controller"))
                 }
             }
             .formStyle(.grouped)
+            #if !os(tvOS)
             .scrollContentBackground(.hidden)
+            #endif
             .background(ShellPalette.background)
             .onChange(of: focus.id) { _, id in
                 guard let id, id.hasPrefix("ctl.") else { return }

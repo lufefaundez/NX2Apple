@@ -89,6 +89,8 @@
   "build.showLibrary": "查看游戏",
   "build.start": "开始构建",
   "build.startGame": "构建游戏",
+  "build.tvos": "Apple TV",
+  "build.tvosNote": "在你的 Apple TV 4K 上用一个应用畅玩所有游戏。",
   "builder.choose": "选择…",
   "builder.notFound": "未找到，请选择 nxb 程序",
   "builder.note": "更快，但可能不支持所有游戏，不支持时会自动改用标准构建器",

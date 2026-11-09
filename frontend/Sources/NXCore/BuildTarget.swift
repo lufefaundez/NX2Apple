@@ -5,10 +5,14 @@ import Foundation
 package enum BuildTarget {
     package static let mac = "mac-app"
     package static let ios = "ios"
+    package static let tvos = "tvos"
 
-    /// Anything that is not the Mac app is the iPhone / iPad target. That covers a missing value, and the values older
-    /// versions stored ("ios" for one IPA per game, "ios-shell" for the shared app).
-    package static func normalized(_ value: String?) -> String { value == mac ? mac : ios }
+    /// Normalizes the target string: "mac-app", "tvos" (or "appletvos"), else "ios".
+    package static func normalized(_ value: String?) -> String {
+        if value == mac { return mac }
+        if value == tvos || value == "appletvos" { return tvos }
+        return ios
+    }
 
     /// The saved choice. An old value is stored again in its new form.
     package static func saved(_ defaults: UserDefaults = .standard) -> String {

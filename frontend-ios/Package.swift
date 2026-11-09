@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ShellUI",
-    platforms: [.iOS(.v26), .macOS(.v26)],
+    platforms: [.iOS(.v26), .tvOS(.v26), .macOS(.v26)],
     products: [
         .library(name: "ShellUI", targets: ["ShellUI"]),
         // The controller adapter: GameController input turned into ShellInput, kept apart from the views.

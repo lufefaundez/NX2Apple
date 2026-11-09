@@ -35,24 +35,35 @@ public enum BookmarkResolution: Equatable, Sendable {
     public var hasBookmark: Bool { (defaults.data(forKey: key)?.isEmpty ?? true) == false }
 
     private static func fresh(_ url: URL) -> Data? {
+        #if os(tvOS)
+        return nil
+        #else
         // The scope the picker granted lasts while it is held, and a bookmark written without it stops resolving
         // from the next launch on.
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         return try? url.bookmarkData(options: createOptions, includingResourceValuesForKeys: nil, relativeTo: nil)
+        #endif
     }
 
     /// Stores a bookmark for a URL the player just picked. False when the system refuses one or it does not resolve back.
     @discardableResult public func store(_ url: URL) -> Bool {
+        #if os(tvOS)
+        return false
+        #else
         guard let data = Self.fresh(url) else { return false }
         var stale = false
         guard (try? URL(resolvingBookmarkData: data, options: Self.resolveOptions, relativeTo: nil, bookmarkDataIsStale: &stale)) != nil else { return false }
         releaseScope()
         defaults.set(data, forKey: key)
         return true
+        #endif
     }
 
     public func resolve() -> BookmarkResolution {
+        #if os(tvOS)
+        return .none
+        #else
         guard let data = defaults.data(forKey: key), !data.isEmpty else { return .none }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, options: Self.resolveOptions, relativeTo: nil, bookmarkDataIsStale: &stale) else { return .stale }
@@ -60,6 +71,7 @@ public enum BookmarkResolution: Equatable, Sendable {
         if held == nil { _ = url.startAccessingSecurityScopedResource(); held = url }
         if stale, let again = Self.fresh(url) { defaults.set(again, forKey: key) }
         return .url(url)
+        #endif
     }
 
     /// Forgets the choice.

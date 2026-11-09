@@ -125,7 +125,9 @@ extension ShellInstaller {
         }
         var env = ShellInstall.projectEnvironment(root: root, frameworks: library.games.map(\.framework), bundleID: library.bundleID,
                                                   team: team, python: python, path: toolPath, home: NSHomeDirectory(), user: NSUserName(),
-                                                  tmp: NSTemporaryDirectory(), package: package)
+                                                  tmp: NSTemporaryDirectory(), package: package, platform: platform,
+                                                  cloudKitContainer: cloudKitContainer, saveBridgeURL: saveBridgeURL,
+                                                  saveBridgeFallbackURL: saveBridgeFallbackURL, saveBridgeToken: saveBridgeToken)
         env.merge(BundledTools.environment(for: python)) { $1 }
         let projectName = t("shell.projectStage")
         begin(Self.projectStageID, projectName)

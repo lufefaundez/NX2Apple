@@ -28,11 +28,17 @@ package enum ShellMove: Equatable {
 
 extension BuildStore {
     /// The shell folder the cache row shows: the frameworks' mirror, shell.json and the banner cache live here.
-    package var shellCachePath: String { ShellLibrary.previewRoot(defaults: defaults, parent: shellRootParent, home: home) }
+    package var shellCachePath: String {
+        let base = ShellLibrary.previewRoot(defaults: defaults, parent: shellRootParent, home: home)
+        return target == BuildTarget.tvos ? base + "-tvos" : base
+    }
     /// The folder a first shell root would sit in: the output folder, else the game's folder.
     package var shellRootParent: String { outDir.isEmpty ? inputFolder : outDir }
     /// The shell folder of the install: the saved one, else next to the output folder (or the game's folder).
-    package var shellRoot: String { ShellLibrary.resolveRoot(defaults: defaults, parent: shellRootParent, home: home) }
+    package var shellRoot: String {
+        let base = ShellLibrary.resolveRoot(defaults: defaults, parent: shellRootParent, home: home)
+        return target == BuildTarget.tvos ? base + "-tvos" : base
+    }
 
     /// Why the shell folder cannot be written (`nil`: it can), before an hour of building rather than at the last step.
     package func shellRootProblem() -> String? {
