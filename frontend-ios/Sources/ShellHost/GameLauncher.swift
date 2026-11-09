@@ -20,6 +20,10 @@ public struct LaunchableGame: Equatable, Sendable {
     public var environment: [String: String]
     /// The picked cloud-save folder, when cloud saves are on.
     public var cloudSavesURL: URL?
+    /// Remote save-sync target (cloudkit:// or http(s):// Mac Save Bridge), fallback and Bearer token.
+    public var saveSyncTarget: String? = nil
+    public var saveSyncFallback: String? = nil
+    public var saveSyncToken: String? = nil
 }
 
 /// The seam between the shell and the engine. The shell calls `launch` when the player presses Play on a playable game.

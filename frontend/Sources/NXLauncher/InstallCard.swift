@@ -28,7 +28,8 @@ package struct InstallCard: View {
     }
 
     private var card: some View {
-        let options = [(value: "", label: loc.t("dev.none"))] + devices.devices.map { d in
+        let filteredDevices = devices.devices(for: build.target)
+        let options = [(value: "", label: loc.t("dev.none"))] + filteredDevices.map { d in
             (value: d.id, label: d.name + (d.reachable ? "" : " (" + loc.t("dev.notConnected") + ")"))
         }
         let teams = devices.teams.map { (value: $0.id, label: $0.label(personalTeam: loc.t("dev.personalTeam"))) }
@@ -53,7 +54,7 @@ package struct InstallCard: View {
                 CardDivider()
                 ExportSteps(build: build, devices: devices)
             } else {
-                CardRow(loc.t("dev.target"), detail: devices.checked && devices.devices.isEmpty ? loc.t("dev.noDevices") : "") {
+                CardRow(loc.t("dev.target"), detail: devices.checked && filteredDevices.isEmpty ? loc.t("dev.noDevices") : "") {
                     RefreshDevicesButton(devices: devices)
                     LauncherDropdown(options: options, selection: devices.installDevice, label: loc.t("dev.target")) { devices.installDevice = $0 }
                 }

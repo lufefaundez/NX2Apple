@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 14:52:16 -0300
+Subject: [PATCH] nvn: decode BC buffer-to-texture copies into unpacked
+ textures
+
+Decode compressed BC blocks through nvn_bc_decode in copy_b2t when CPU BC
+decoding is active, clamping edge block dimensions to the destination mip
+and skipping decoded-to-compressed mirror readbacks.
+
+Add GPU regression coverage for BC1, BC3, BC4 and BC5 buffer-to-texture
+uploads across mip levels, array layers and custom row/image strides.
+
+Upstream-Status: fork-only (declined seedds/nxnative#488)
+Reason: Complete CPU BC upload coverage for nvnCommandBufferCopyBufferToTexture on GPUs without native BC sampling.
+Issue: LNPANDY/NX2Apple#732
+---
+ dm/gfx/nvn/nvn_mtl.m    | 25 +++++++++++++++---
+ dm/gfx/tests/t_bc_cpu.m | 56 ++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 76 insertions(+), 5 deletions(-)
+
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index ad3424b..abe024c 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -2278,7 +2278,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); snap_dra
+ 
+ // ================= Render replay =================
+ #include "../../host/front.h"
+-static int g_red_once[159];   // one past the highest key: a new key raises this, and the macro refuses to compile otherwise
++static int g_red_once[160];   // one past the highest key: a new key raises this, and the macro refuses to compile otherwise
+ #define RED_ONCE(k, ...) do { _Static_assert((k) < sizeof g_red_once / sizeof *g_red_once, "a RED_ONCE key past g_red_once: raise its size"); if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
+ // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
+ // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
+@@ -13357,17 +13357,34 @@ static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
+         FILE *f = fopen(p, "wb"); if (f) { fwrite((const uint8_t *)((__bridge id<MTLBuffer>)mb).contents + mo, 1, img * nz, f); fclose(f); } } }
+     // Into Metal's order (rb_copy_shift): converted on the GPU into a staging area of the frame arena, which the blit copies from
+     id<MTLBuffer> sb = (__bridge id<MTLBuffer>)mb; int shift = rb_copy_shift(c->tex, t);
+-    if (shift) {
++    uint32_t bc_pf = 0; int bc_bpp = 0;
++    uint32_t cw = c->r.width > 0 ? (uint32_t)c->r.width : 0, ch = c->r.height > 0 ? (uint32_t)c->r.height : 0;
++    if (g_bc_cpu && nvn_bc_unpacked(c->tex->d.format, &bc_pf, &bc_bpp)) {
++        NSUInteger lw = MAX(t.width >> level, 1ul), lh = MAX(t.height >> level, 1ul);
++        if (!cw || !ch || nz <= 0 || c->r.xoffset < 0 || c->r.yoffset < 0 || (NSUInteger)c->r.xoffset >= lw || (NSUInteger)c->r.yoffset >= lh) return;
++        if ((NSUInteger)c->r.xoffset + cw > lw) cw = (uint32_t)(lw - (NSUInteger)c->r.xoffset);
++        if ((NSUInteger)c->r.yoffset + ch > lh) ch = (uint32_t)(lh - (NSUInteger)c->r.yoffset);
++        if (gw_live(c->src, c->src + img * nz) && g_fence) mtl_wait_at(g_fence, UINT64_MAX, WS_READTEX);
++        if (pend_hits(c->src, img * nz)) RED_ONCE(159, "buffer→texture BC copy source has GPU-side writes in this submission: decoded from the current content");
++        const uint8_t *src = sb.contents ? (const uint8_t *)sb.contents + mo : (nvn_host_readable(c->src, img * nz) ? (const uint8_t *)(uintptr_t)c->src : NULL);
++        if (!src) { RED_ONCE(23, "buffer→texture copy source is in no memory pool"); return; }
++        size_t dpitch = (size_t)cw * bc_bpp, dimg = dpitch * (size_t)ch;
++        id<MTLBuffer> ab; size_t ao = arena_alloc(dimg * (size_t)nz, &ab);
++        uint8_t *dst = (uint8_t *)ab.contents + ao;
++        for (int z = 0; z < nz; z++)
++            nvn_bc_decode(c->tex->d.format, src + (size_t)z * img, row, cw, ch, dst + (size_t)z * dimg, dpitch);
++        sb = ab; mo = ao; row = dpitch; img = dimg; rb = 0;
++    } else if (shift) {
+         size_t wb = (size_t)((c->r.width + bw - 1) / bw) * bpb; id<MTLBuffer> ab; size_t ao = arena_alloc(wb * rows * nz, &ab);
+         if (rb_swap_gpu(sb.gpuAddress + mo, row, img, ab.gpuAddress + ao, wb, wb * rows, wb, rows, nz, shift)) { sb = ab; mo = ao; row = wb; img = wb * rows; }
+         else RED_ONCE(7, "RGB565-family buffer→texture copy left in the guest's order: red and blue exchanged");
+     }
+     id<MTL4ComputeCommandEncoder> b = blit();
+     if (is3d)
+-        enc_b_copy_buffer_texture(b, sb, mo, row, img, MTLSizeMake(c->r.width, c->r.height, nz), t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset));
++        enc_b_copy_buffer_texture(b, sb, mo, row, img, MTLSizeMake(cw, ch, nz), t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset));
+     else
+         for (int z = 0; z < nz; z++)
+-            enc_b_copy_buffer_texture(b, sb, mo + z * img, row, img, MTLSizeMake(c->r.width, c->r.height, 1), t, layer0 + c->r.zoffset + z, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, 0));
++            enc_b_copy_buffer_texture(b, sb, mo + z * img, row, img, MTLSizeMake(cw, ch, 1), t, layer0 + c->r.zoffset + z, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, 0));
+     if (rb) mirror_readback(c->tex, t, level, layer0, &c->r, "buffer", 0);
+ }
+ 
+diff --git a/dm/gfx/tests/t_bc_cpu.m b/dm/gfx/tests/t_bc_cpu.m
+index b395b55..e54a481 100644
+--- a/dm/gfx/tests/t_bc_cpu.m
++++ b/dm/gfx/tests/t_bc_cpu.m
+@@ -81,10 +81,64 @@ static void views(void) {
+         mtl_drain();
+     }
+ }
++static void b2t(int format, int bpp) {
++    static uint64_t serial=995000;
++    tex_t t={.magic=MAGIC('T','E','X',0),.serial=serial++,.has_layout=0};
++    t.d=(nvn_texdesc){.target=4,.format=format,.width=7,.height=5,.depth=2,.levels=3,.samples=1};
++    nvn_tex_layout(&t.d,&t.L);
++    size_t poolsize=(t.L.size+65536+getpagesize()-1)&~(size_t)(getpagesize()-1);
++    void *mem=NULL; if(posix_memalign(&mem,getpagesize(),poolsize))abort(); memset(mem,0,poolsize);
++    pool_t gpool={.magic=MAGIC('P','O','O','L'),.mem=mem,.size=poolsize,.flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS|NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
++    pool_t spool={.magic=MAGIC('P','O','O','L'),.mem=(uint8_t*)mem+32768,.size=32768,.flags=NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED|NVN_MEMORY_POOL_FLAGS_GPU_CACHED};
++    t.pool=&gpool; t.mem=(uint8_t*)mem+4096;
++    mtl_pool_add(mem,poolsize);
++    size_t bytes=0; for(unsigned l=0;l<3;l++)bytes+=(size_t)MAX(7u>>l,1u)*MAX(5u>>l,1u)*2*bpp;
++    uint8_t *expected=calloc(1,bytes);
++    id<MTLBuffer> readback=[g_dev newBufferWithLength:bytes+512 options:MTLResourceStorageModeShared];
++    unsigned bb=format==0x41||format==0x49?8:16;
++    state_reset(); memset(&R,0,sizeof R); mtl_sub_begin();
++    uint8_t *stage=(uint8_t*)spool.mem; size_t soff=0,off=0;
++    for(unsigned l=0;l<3;l++) {
++        unsigned w=MAX(7u>>l,1u),h=MAX(5u>>l,1u),bx=(w+3)/4,by=(h+3)/4;
++        size_t rstride=bx*bb+16,istride=rstride*by+32;
++        for(unsigned a=0;a<2;a++) {
++            uint8_t pixel[4]={0};
++            for(unsigned ry=0;ry<by;ry++)for(unsigned rx=0;rx<bx;rx++) {
++                uint8_t *b=stage+soff+a*istride+ry*rstride+rx*bb;
++                if(format==0x41) { b[0]=a?0xe0:0; b[1]=a?7:0xf8; pixel[a?1:0]=255; pixel[3]=255; }
++                else if(format==0x44) { b[0]=255; b[1]=255; b[8]=0x1f; b[9]=0; pixel[2]=255; pixel[3]=255; }
++                else { b[0]=(uint8_t)(180+a+l); pixel[0]=b[0]; if(format==0x4b){b[8]=90+a+l;pixel[1]=b[8];} }
++            }
++            for(unsigned i=0;i<w*h;i++)memcpy(expected+off+(size_t)i*bpp,pixel,bpp);
++            off+=(size_t)w*h*bpp;
++        }
++        p_copy_b2t cmd={.src=(uint64_t)(uintptr_t)(stage+soff),.tex=&t,.has_view=1,.view={.set_levels=1,.base_level=l},.r={0,0,0,(int)(l==2?4:w),(int)(l==2?4:h),2}};
++        S.copy_stride=(int64_t)rstride; S.copy_img_stride=(int64_t)istride;
++        copy_b2t(&cmd,sizeof cmd+8);
++        S.copy_stride=0; S.copy_img_stride=0;
++        soff+=istride*2+64;
++    }
++    id<MTLTexture> image=tex_mtl(&t); CHECK("b2t decoded texture exists",image!=nil); finish();
++    if(image) {
++        id<MTLCommandBuffer> cb=q_cb(); id<MTLBlitCommandEncoder> enc=[cb blitCommandEncoder]; off=0;
++        for(unsigned l=0;l<3;l++)for(unsigned a=0;a<2;a++) {
++            unsigned w=MAX(7u>>l,1u),h=MAX(5u>>l,1u);
++            [enc copyFromTexture:image sourceSlice:a sourceLevel:l sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(w,h,1) toBuffer:readback destinationOffset:256+off destinationBytesPerRow:w*bpp destinationBytesPerImage:w*h*bpp];
++            off+=(size_t)w*h*bpp;
++        }
++        [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
++        CHECK("b2t GPU readback completes",cb.status==MTLCommandBufferStatusCompleted);
++        CHECK("every b2t decoded mip/layer pixel matches reference",!memcmp((uint8_t*)readback.contents+256,expected,bytes));
++    }
++    mtl_tex_release(&t); mtl_drain(); mtl_alias_drop_pool(&gpool); mtl_pool_del(mem); mtl_drain(); free(mem); free(expected);
++}
+ int main(int argc,char **argv) { @autoreleasepool {
+     mtl_init(); g_bc_cpu=1;
+     CHECK("GPU deswizzle is enabled for the regression",g_nvn_deswz_gpu);
+-    if(argc<2||strcmp(argv[1],"views"))for(int direct=0;direct<2;direct++){uploads(0x41,4,direct);uploads(0x49,1,direct);uploads(0x4b,2,direct);}
++    if(argc<2||strcmp(argv[1],"views")){
++        for(int direct=0;direct<2;direct++){uploads(0x41,4,direct);uploads(0x49,1,direct);uploads(0x4b,2,direct);}
++        b2t(0x41,4); b2t(0x44,4); b2t(0x49,1); b2t(0x4b,2);
++    }
+     if(argc<2||strcmp(argv[1],"uploads"))views();
+     printf("t_bc_cpu: %d checks, %d failed\n",checks,failed); return failed!=0;
+ }}

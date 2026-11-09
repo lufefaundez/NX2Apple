@@ -89,6 +89,8 @@
   "build.showLibrary": "Visa spel",
   "build.start": "Starta bygget",
   "build.startGame": "Bygg spel",
+  "build.tvos": "Apple TV",
+  "build.tvosNote": "En app på din Apple TV 4K för alla dina spel.",
   "builder.choose": "Välj …",
   "builder.notFound": "Hittades inte, välj programmet nxb",
   "builder.note": "Snabbare, stöder kanske inte alla spel och går automatiskt tillbaka till standardbyggaren",

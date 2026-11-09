@@ -42,10 +42,12 @@ struct CoverFlowView: View, Equatable {
         GeometryReader { geometry in
             flow(size: geometry.size)
                 .onGeometryChange(for: CGRect?.self) { proxy in
+                    #if !os(tvOS)
                     if #available(iOS 27.1, macOS 27.1, *) {
                         let region = proxy.reservedRegions(kind: .division).first?.frame
                         return ShellLayout.divisionAxis(region, in: proxy.size) == .vertical ? region : nil
                     }
+                    #endif
                     return nil
                 } action: { division = $0 }
         }

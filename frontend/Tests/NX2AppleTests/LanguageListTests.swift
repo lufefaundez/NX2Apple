@@ -30,9 +30,9 @@ final class LanguageListTests: IsolatedDefaultsTestCase {
     }
 
     func testThePickerListsTheFiveLanguagesByTheirOwnNamesInTheOrderItAlwaysHadThenItalianAndJapanese() {
-        XCTAssertEqual(AppCard.languageCodes, ["", "zh", "en", "sv", "de", "fr", "it", "ja"])
-        XCTAssertEqual(Lang.all.map(\.name), ["\u{4E2D}\u{6587}", "English", "Svenska", "Deutsch", "Fran\u{E7}ais", "Italiano", "\u{65E5}\u{672C}\u{8A9E}"])
-        XCTAssertEqual(Lang.all, [Lang.zh, .en, .sv, .de, .fr, Lang("it"), Lang("ja")])
+        XCTAssertEqual(AppCard.languageCodes, ["", "zh", "en", "sv", "de", "fr", "es", "it", "ja"])
+        XCTAssertEqual(Lang.all.map(\.name), ["\u{4E2D}\u{6587}", "English", "Svenska", "Deutsch", "Fran\u{E7}ais", "Español", "Italiano", "\u{65E5}\u{672C}\u{8A9E}"])
+        XCTAssertEqual(Lang.all, [Lang.zh, .en, .sv, .de, .fr, Lang("es"), Lang("it"), Lang("ja")])
     }
 
     func testFindKnowsACodeOnlyWhenAFileHasIt() {
@@ -65,6 +65,7 @@ final class LanguageListTests: IsolatedDefaultsTestCase {
             if before == "en", added.contains(got) { continue }
             XCTAssertEqual(got, before, "\(preferred)")
         }
+        XCTAssertEqual(Lang.detect(preferred: ["es-419"], among: languages).code, "es")
         XCTAssertEqual(Lang.detect(preferred: ["it-IT"], among: languages).code, "it")
         XCTAssertEqual(Lang.detect(preferred: ["ja-JP"], among: languages).code, "ja")
     }
@@ -90,8 +91,8 @@ final class LanguageListTests: IsolatedDefaultsTestCase {
         XCTAssertEqual(LocalizationFiles.directory(environment: ["NX_L10N_DIR": folder.path])?.path, folder.path)
         let languages = LocalizationFiles.languages(from: folder)
         // It is in the picker, after the five that have a place and the real files without one (Italian, Japanese), and shows its own name.
-        XCTAssertEqual(languages.map(\.code), ["zh", "en", "sv", "de", "fr", "it", "ja", "xx"])
-        XCTAssertEqual(AppCard.languageCodes(among: languages), ["", "zh", "en", "sv", "de", "fr", "it", "ja", "xx"])
+        XCTAssertEqual(languages.map(\.code), ["zh", "en", "sv", "de", "fr", "es", "it", "ja", "xx"])
+        XCTAssertEqual(AppCard.languageCodes(among: languages), ["", "zh", "en", "sv", "de", "fr", "es", "it", "ja", "xx"])
         XCTAssertEqual(languages.last?.name, "Xenia")
         // The device language selects it by its prefix, and the others still select theirs.
         XCTAssertEqual(Lang.detect(preferred: ["xx-YY"], among: languages), Lang("xx"))
@@ -103,7 +104,7 @@ final class LanguageListTests: IsolatedDefaultsTestCase {
         XCTAssertEqual(catalogs["xx"]?["onboarding.start"], "Go")
         XCTAssertNil(catalogs["xx"]?["onboarding.later"])
         XCTAssertNotNil(catalogs["en"]?["onboarding.later"])
-        XCTAssertEqual(catalogs.keys.sorted(), ["de", "en", "fr", "it", "ja", "sv", "xx", "zh"])
+        XCTAssertEqual(catalogs.keys.sorted(), ["de", "en", "es", "fr", "it", "ja", "sv", "xx", "zh"])
     }
 
     func testAFileWithoutALanguageEntryStillWorks() throws {

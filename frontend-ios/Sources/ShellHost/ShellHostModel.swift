@@ -15,12 +15,18 @@ public struct ShellHostConfig: Sendable {
     public var environment: HostEnvironment
     /// Opened by "Update app". Nil: the shell says no address is configured.
     public var updateURL: URL?
+    public var cloudKitContainer: String?
+    public var saveBridgeURL: String?
+    public var saveBridgeFallbackURL: String?
+    public var saveBridgeToken: String?
     public var defaults: @Sendable (String) -> UserDefaults
     public var openURL: @MainActor @Sendable (URL) -> Void
     /// The clock, for the last-played date and its wording.
     public var now: @Sendable () -> Date
 
     public init(gamesRoot: URL, appDataRoot: URL, environment: HostEnvironment = HostEnvironment(), updateURL: URL? = nil,
+                cloudKitContainer: String? = nil, saveBridgeURL: String? = nil,
+                saveBridgeFallbackURL: String? = nil, saveBridgeToken: String? = nil,
                 defaults: @escaping @Sendable (String) -> UserDefaults = GameDefaults.suite(for:),
                 openURL: @escaping @MainActor @Sendable (URL) -> Void = ShellHostConfig.systemOpen,
                 now: @escaping @Sendable () -> Date = { Date() }) {
@@ -28,9 +34,35 @@ public struct ShellHostConfig: Sendable {
         self.appDataRoot = appDataRoot
         self.environment = environment
         self.updateURL = updateURL
+        self.cloudKitContainer = cloudKitContainer
+        self.saveBridgeURL = saveBridgeURL
+        self.saveBridgeFallbackURL = saveBridgeFallbackURL
+        self.saveBridgeToken = saveBridgeToken
         self.defaults = defaults
         self.openURL = openURL
         self.now = now
+    }
+
+    public var remoteSaveSyncTarget: String? {
+        if let ck = cloudKitContainer, !ck.isEmpty {
+            return ck.hasPrefix("cloudkit://") ? ck : "cloudkit://\(ck)"
+        }
+        if let bridge = saveBridgeURL, !bridge.isEmpty { return bridge }
+        if let fb = saveBridgeFallbackURL, !fb.isEmpty { return fb }
+        return nil
+    }
+
+    public var remoteSaveSyncFallback: String? {
+        if let ck = cloudKitContainer, !ck.isEmpty {
+            if let bridge = saveBridgeURL, !bridge.isEmpty { return bridge }
+            if let fb = saveBridgeFallbackURL, !fb.isEmpty { return fb }
+            return nil
+        }
+        if let bridge = saveBridgeURL, !bridge.isEmpty,
+           let fb = saveBridgeFallbackURL, !fb.isEmpty, fb != bridge {
+            return fb
+        }
+        return nil
     }
 
     @MainActor public static func systemOpen(_ url: URL) {
@@ -39,9 +71,14 @@ public struct ShellHostConfig: Sendable {
         #endif
     }
 
-    /// The app's `Documents/games/`.
+    /// The app's `Documents/games/` on iOS, or `Library/Caches/games/` on tvOS.
     public static func defaultAppDataRoot() -> URL {
-        (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
+        #if os(tvOS)
+        let dir: FileManager.SearchPathDirectory = .cachesDirectory
+        #else
+        let dir: FileManager.SearchPathDirectory = .documentDirectory
+        #endif
+        return (FileManager.default.urls(for: dir, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("games", isDirectory: true)
     }
 }
@@ -249,9 +286,14 @@ public struct ShellHostConfig: Sendable {
         case .own(let url): cloud = url.lastPathComponent
         case .stale: cloudNote = hostText("The folder you chose before is no longer readable. Please choose it again.")
         case .shell(let url): cloud = hostText("\(url.lastPathComponent) (from Settings)"); cloudFromShell = true
-        case .off, .none: break
+        case .none:
+            if config.remoteSaveSyncTarget != nil {
+                cloud = "iCloud"
+                cloudFromShell = true
+            }
+        case .off: break
         }
-        var shellFolder = false
+        var shellFolder = config.remoteSaveSyncTarget != nil
         if case .url = shellCloud.resolve() { shellFolder = true }
         let fromShell = Set(profile.settings.filter(store.isFromShell).map(\.env))
         let pad = GamePadMapStore(defaults: config.defaults(entry.id))
@@ -466,16 +508,24 @@ public struct ShellHostConfig: Sendable {
         launchingGame = true
         defer { launchingGame = false }
         var cloud: URL?
+        var remoteTarget: String?
+        var remoteFallback: String?
+        var remoteToken: String?
         switch cloudSaves(id) {
         case .own(let url), .shell(let url): cloud = url
-        case .off, .stale, .none: break
+        case .none:
+            remoteTarget = config.remoteSaveSyncTarget
+            remoteFallback = config.remoteSaveSyncFallback
+            remoteToken = config.saveBridgeToken
+        case .off, .stale: break
         }
         // Remembered when Play is triggered, even if the launcher then fails (the stub). The order changes at the next load.
         LastPlayedStore(defaults: config.defaults(id)).record(config.now())
         refresh(id)
         var game = LaunchableGame(
             titleID: id, name: entry.title, manifest: manifest, directory: entry.directory, frameworkURL: framework, dataURL: dataURL,
-            appFolder: appFolder(for: id), environment: launchEnvironment(profile: profile, id: id), cloudSavesURL: cloud)
+            appFolder: appFolder(for: id), environment: launchEnvironment(profile: profile, id: id), cloudSavesURL: cloud,
+            saveSyncTarget: remoteTarget, saveSyncFallback: remoteFallback, saveSyncToken: remoteToken)
         do {
             game.shaderResourcesURL = try await ShaderResources.shared.prepare(game)
             try await launcher.launch(game)

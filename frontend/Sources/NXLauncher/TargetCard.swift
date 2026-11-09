@@ -16,6 +16,7 @@ package struct TargetCard: View {
             HStack(spacing: 14) {
                 targetCard(BuildTarget.mac, symbol: "desktopcomputer", title: "build.mac", note: "build.macNote")
                 targetCard(BuildTarget.ios, symbol: "iphone", title: "build.ios", note: "build.iosNote")
+                targetCard(BuildTarget.tvos, symbol: "appletv", title: "build.tvos", note: "build.tvosNote")
             }
             // A Switch 2 game (#445): how far the engine's support goes, for the chosen target. Nothing is blocked: the engine
             // builds both, and one Switch 2 game ran on an iPhone, but no target is tested for every game.

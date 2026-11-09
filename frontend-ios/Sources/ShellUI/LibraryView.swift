@@ -176,9 +176,11 @@ public struct LibraryView: View {
                 targets.libraryValues = all.filter { $0.frame.width > 1 }
             }
             .onGeometryChange(for: Axis?.self) { geometry in
+                #if !os(tvOS)
                 if #available(iOS 27.1, macOS 27.1, *) {
                     return ShellLayout.divisionAxis(geometry.reservedRegions(kind: .division).first?.frame, in: geometry.size)
                 }
+                #endif
                 return nil
             } action: { divisionAxis = $0 }
             .onAppear { self.layout = layout }
@@ -369,7 +371,9 @@ public struct LibraryView: View {
 
         }
         .navigationTitle(menuTitle)
+        #if !os(tvOS)
         .navigationSubtitle(tabletopSettings ? ShellStrings.text("Game settings").uppercased() : "")
+        #endif
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -414,7 +418,9 @@ public struct LibraryView: View {
                             PaneBanner(game: selected.game, width: width)
                                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { settingsHeroHeight = $0 }
                                 .listRowBackground(Color.clear)
+                                #if !os(tvOS)
                                 .listRowSeparator(.hidden)
+                                #endif
                         }
                         .id("set.top")
                     }
@@ -424,7 +430,9 @@ public struct LibraryView: View {
                 }
                 .formStyle(.grouped)
                 .contentMargins(.top, 0, for: .scrollContent)
+                #if !os(tvOS)
                 .scrollContentBackground(.hidden)
+                #endif
                 .onScrollGeometryChange(for: Bool.self) {
                     settingsHeroHeight == 0 || $0.contentOffset.y + $0.contentInsets.top < settingsHeroHeight
                 } action: { _, visible in settingsHeroVisible = visible }
@@ -514,12 +522,16 @@ public struct LibraryView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("library.position")
             }
+            #if !os(tvOS)
             .sharedBackgroundVisibility(.hidden)
+            #endif
         }
 
         if let item = libraryActions.first(where: { $0.id == "controllers.open" }) {
             controllerItem(item)
+            #if !os(tvOS)
             ToolbarSpacer(.fixed, placement: .primaryAction)
+            #endif
         }
         if let item = libraryActions.first(where: { $0.id == "shellSettings.open" }) {
             ToolbarItem(placement: .primaryAction) {

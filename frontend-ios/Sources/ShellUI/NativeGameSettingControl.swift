@@ -27,6 +27,7 @@ struct NativeGameSettingControl: View {
                             .font(.body.bold()).monospacedDigit().foregroundStyle(ShellPalette.cream)
                     }
                     if lower < upper && step > 0 {
+                        #if !os(tvOS)
                         Slider(value: Binding(get: { Double(row.value) ?? lower }, set: { change(String($0)) }),
                                in: lower...upper, step: step)
                             .tint(ShellPalette.cream)
@@ -35,6 +36,21 @@ struct NativeGameSettingControl: View {
                                 let current = Double(row.value) ?? lower
                                 change(String(current >= upper ? lower : min(upper, current + step)))
                             }
+                        #else
+                        Button {
+                            let current = Double(row.value) ?? lower
+                            change(String(current >= upper ? lower : min(upper, current + step)))
+                        } label: {
+                            ProgressView(value: min(max(Double(row.value) ?? lower, lower), upper) - lower, total: upper - lower)
+                                .tint(ShellPalette.cream)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(row.label)
+                        .shellTarget(targetPrefix + row.id, enabled: row.enabled) {
+                            let current = Double(row.value) ?? lower
+                            change(String(current >= upper ? lower : min(upper, current + step)))
+                        }
+                        #endif
                     }
                 }
             }

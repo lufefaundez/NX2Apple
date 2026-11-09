@@ -149,7 +149,10 @@ package enum ShellInstall {
     }
 
     package static func derivedData(root: String) -> String { root + "/derived-data" }
-    package static func appPath(root: String) -> String { derivedData(root: root) + "/Build/Products/Release-iphoneos/" + appName }
+    package static func appPath(root: String, platform: String = "ios") -> String {
+        let dir = platform == "tvos" ? "Release-appletvos" : "Release-iphoneos"
+        return derivedData(root: root) + "/Build/Products/\(dir)/" + appName
+    }
 
     /// The folder that mirrors every game's framework inside the shell folder: a game survives its build folder's deletion here.
     package static func frameworksMirror(root: String) -> String { root + "/frameworks" }
@@ -223,7 +226,10 @@ package enum ShellInstall {
 
     /// What build_shell.sh reads. `path` is the build's own tool PATH (xcodegen must be found on it).
     package static func projectEnvironment(root: String, frameworks: [String], bundleID: String, team: String, python: String,
-                                   path: String, home: String, user: String, tmp: String? = nil, package: String? = nil) -> [String: String] {
+                                   path: String, home: String, user: String, tmp: String? = nil, package: String? = nil,
+                                   platform: String = "ios", cloudKitContainer: String? = nil,
+                                   saveBridgeURL: String? = nil, saveBridgeFallbackURL: String? = nil,
+                                   saveBridgeToken: String? = nil) -> [String: String] {
         var env = ["SHELL_DIR": projectFolder(root: root),
                    "DM_SHELL_FRAMEWORKS": frameworks.joined(separator: "\n"),
                    "DM_BUNDLE_ID": bundleID,
@@ -231,6 +237,11 @@ package enum ShellInstall {
                    "DM_XCODE_DERIVED_DATA": derivedData(root: root),
                    "FONT_PY": python,
                    "PATH": path, "HOME": home, "USER": user, "LANG": "en_US.UTF-8"]
+        if platform == "tvos" { env["DM_PLATFORM"] = "tvos" }
+        if let cloudKitContainer, !cloudKitContainer.isEmpty { env["DM_CLOUDKIT_CONTAINER"] = cloudKitContainer }
+        if let saveBridgeURL, !saveBridgeURL.isEmpty { env["DM_SAVE_BRIDGE_URL"] = saveBridgeURL }
+        if let saveBridgeFallbackURL, !saveBridgeFallbackURL.isEmpty { env["DM_SAVE_BRIDGE_FALLBACK_URL"] = saveBridgeFallbackURL }
+        if let saveBridgeToken, !saveBridgeToken.isEmpty { env["DM_SAVE_BRIDGE_TOKEN"] = saveBridgeToken }
         if let tmp { env["TMPDIR"] = tmp }
         if let package { env["DM_SHELL_PACKAGE"] = package }
         return env
@@ -253,7 +264,9 @@ package enum ShellInstall {
 
     // ---- 7: the game data ----
 
-    package static func gameFolder(titleID: String) -> String { "Documents/games/\(titleID)" }
+    package static func gameFolder(titleID: String, platform: String = "ios") -> String {
+        platform == "tvos" ? "Library/Caches/games/\(titleID)" : "Documents/games/\(titleID)"
+    }
 
     /// Kept free beyond the data on the device (the game's saves, shader caches, the system).
     package static let freeSpaceMargin: Int64 = 2_000_000_000
@@ -292,16 +305,16 @@ package enum ShellInstall {
     }
 
     /// devicectl's recursive listing of the game's folder in the app's container, written as JSON to `json`.
-    package static func listCommand(xcrun: String, device: String, bundleID: String, titleID: String, json: String) -> [String] {
+    package static func listCommand(xcrun: String, device: String, bundleID: String, titleID: String, json: String, platform: String = "ios") -> [String] {
         [xcrun, "devicectl", "device", "info", "files", "--device", device, "--domain-type", "appDataContainer",
-         "--domain-identifier", bundleID, "--subdirectory", gameFolder(titleID: titleID), "--json-output", json]
+         "--domain-identifier", bundleID, "--subdirectory", gameFolder(titleID: titleID, platform: platform), "--json-output", json]
     }
 
     /// One file into the game's folder. A file destination creates the parent folders and names the file. Never
     /// `--remove-existing-content true`: on a real device it deletes the destination's siblings too (#266).
-    package static func copyCommand(xcrun: String, device: String, bundleID: String, titleID: String, source: String, relativePath: String) -> [String] {
+    package static func copyCommand(xcrun: String, device: String, bundleID: String, titleID: String, source: String, relativePath: String, platform: String = "ios") -> [String] {
         [xcrun, "devicectl", "device", "copy", "to", "--device", device, "--source", source,
-         "--destination", gameFolder(titleID: titleID) + "/" + relativePath,
+         "--destination", gameFolder(titleID: titleID, platform: platform) + "/" + relativePath,
          "--domain-type", "appDataContainer", "--domain-identifier", bundleID]
     }
 
@@ -441,6 +454,11 @@ package struct ShellInstaller {
     package var banners: URL = BannerCache.directory
     /// A picture the player chose for the game in the library, which wins over the cached banner (nil: none).
     package var pickedArtwork: String? = nil
+    package var platform = "ios"
+    package var cloudKitContainer: String? = nil
+    package var saveBridgeURL: String? = nil
+    package var saveBridgeFallbackURL: String? = nil
+    package var saveBridgeToken: String? = nil
 
     package init(xcrun: String = "/usr/bin/xcrun", repo: String, python: String, root: String, device: String, team: String) {
         self.xcrun = xcrun; self.repo = repo; self.python = python; self.root = root; self.device = device; self.team = team
@@ -565,7 +583,7 @@ package struct ShellInstaller {
         end(Self.signStageID, signName, ok: true)
 
         // 6: install over the existing app, which keeps its Documents
-        let app = ShellInstall.appPath(root: root)
+        let app = ShellInstall.appPath(root: root, platform: platform)
         guard FileManager.default.fileExists(atPath: app) else {
             return Outcome(ok: false, message: fmt("dev.noProject", app), step: .install)
         }
@@ -592,7 +610,7 @@ package struct ShellInstaller {
     /// is on the device already, under the identifier shell.json holds.
     package func installData(titleID: String, archive: String) -> Outcome {
         if let refused = pairingRefusal() { return refused }
-        let bundleID = ShellLibrary.load(root: root).bundleID, app = ShellInstall.appPath(root: root)
+        let bundleID = ShellLibrary.load(root: root).bundleID, app = ShellInstall.appPath(root: root, platform: platform)
         return copyGameData(titleID: titleID, archive: archive, app: app, bundleID: bundleID,
                             outcome: Outcome(ok: true, message: fmt("dev.installed", deviceName), appPath: app, bundleID: bundleID))
     }
@@ -614,7 +632,7 @@ package struct ShellInstaller {
         let listing = NSTemporaryDirectory() + "nspb-shell-files-\(UUID().uuidString.prefix(8)).json"
         defer { try? FileManager.default.removeItem(atPath: listing) }
         // A folder that does not exist yet makes devicectl exit non-zero with an error JSON: nothing on the device, not a failure
-        _ = run(ShellInstall.listCommand(xcrun: xcrun, device: device, bundleID: bundleID, titleID: titleID, json: listing),
+        _ = run(ShellInstall.listCommand(xcrun: xcrun, device: device, bundleID: bundleID, titleID: titleID, json: listing, platform: platform),
                 env: nil, label: checkName, step: { _ in nil })
         let onDevice = ShellInstall.parseListing(FileManager.default.contents(atPath: listing))
         let local = ShellInstall.localFiles(in: archive)
@@ -678,7 +696,7 @@ package struct ShellInstaller {
             // Once an overwrite begins, the old receipt cannot vouch for what a failed copy leaves behind.
             if path == "romfs.img", previous != nil { defaults.removeObject(forKey: receipt) }
             let r = run(ShellInstall.copyCommand(xcrun: xcrun, device: device, bundleID: bundleID, titleID: titleID,
-                                                 source: archive + "/" + path, relativePath: path),
+                                                 source: archive + "/" + path, relativePath: path, platform: platform),
                         env: nil, label: copyName, step: BuildProgress.installStep)
             if r.status != 0 {
                 let why = r.lastError ?? fmt("msg.exitCode", r.status)

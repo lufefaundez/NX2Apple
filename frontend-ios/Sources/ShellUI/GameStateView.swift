@@ -65,9 +65,15 @@ public struct StateHelpView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(ShellStrings.text("Details")).shellText(11.5, .semibold).foregroundStyle(.white.opacity(0.5))
                     Text(verbatim: ShellStrings.text("Title ID \(game.id)")).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
-                        .textSelection(.enabled).accessibilityIdentifier("help.titleid")
+                        #if !os(tvOS)
+                        .textSelection(.enabled)
+                        #endif
+                        .accessibilityIdentifier("help.titleid")
                     Text(verbatim: technical).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.5))
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        #if !os(tvOS)
+                        .textSelection(.enabled)
+                        #endif
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("help.details")
                 }
             }

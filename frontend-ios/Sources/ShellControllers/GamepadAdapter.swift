@@ -89,8 +89,9 @@ public struct ConnectedController: Equatable, Sendable {
             let id = Self.id(of: pad)
             let family = ControllerFamily(productCategory: pad.productCategory)
             let name = Self.name(of: pad)
+            let isMicro = pad.extendedGamepad == nil && pad.microGamepad != nil
             pad.physicalInputProfile.valueDidChangeHandler = { [weak self] profile, _ in
-                let state = Self.state(of: profile)
+                let state = Self.state(of: profile, isMicro: isMicro)
                 let snapshot = Self.snapshot(of: profile, name: name)
                 MainActor.assumeIsolated {
                     self?.onSnapshot?(snapshot)
@@ -102,7 +103,7 @@ public struct ConnectedController: Equatable, Sendable {
         reportFirstSnapshot()
     }
 
-    private nonisolated static func state(of pad: GCPhysicalInputProfile) -> PadState {
+    private nonisolated static func state(of pad: GCPhysicalInputProfile, isMicro: Bool = false) -> PadState {
         func pressed(_ name: String) -> Bool { pad.buttons[name]?.isPressed ?? false }
         let dpad = pad.dpads[GCInputDirectionPad], stick = pad.dpads[GCInputLeftThumbstick]
         let dx = dpad?.xAxis.value ?? 0, dy = dpad?.yAxis.value ?? 0
@@ -110,7 +111,7 @@ public struct ConnectedController: Equatable, Sendable {
         let y = dy != 0 ? dy : (stick?.yAxis.value ?? 0)
         var buttons: Set<PadButton> = []
         let names: [(String, PadButton)] = [(GCInputButtonA, .a), (GCInputButtonB, .b), (GCInputButtonX, .x), (GCInputButtonY, .y),
-                                            (GCInputButtonMenu, .menu), (GCInputButtonOptions, .options),
+                                            (GCInputButtonMenu, isMicro ? .b : .menu), (GCInputButtonOptions, .options),
                                             (GCInputLeftShoulder, .leftShoulder), (GCInputRightShoulder, .rightShoulder)]
         for (name, button) in names where pressed(name) { buttons.insert(button) }
         return PadState(x: x, y: y, buttons: buttons)

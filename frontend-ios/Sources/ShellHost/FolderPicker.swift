@@ -16,7 +16,7 @@ public struct NoFolderPicker: FolderPicker {
     public func pickFolder() async -> URL? { nil }
 }
 
-#if canImport(UIKit)
+#if canImport(UIKit) && !os(tvOS)
 /// `UIDocumentPickerViewController` for a folder, opened in place (not copied) as the per-game app does, so the
 /// bookmark keeps pointing at the player's drive or iCloud Drive folder.
 public struct DocumentFolderPicker: FolderPicker {

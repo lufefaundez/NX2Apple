@@ -15,6 +15,12 @@
             "value": "\"%@\" is not a DM_ switch."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "\"%@\" no es un modificador DM_."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -59,6 +65,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ (from Settings)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ (desde Configuración)"
           }
         },
         "fr": {
@@ -107,6 +119,12 @@
             "value": "%@ appears twice in launcher.json."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ aparece dos veces en launcher.json."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -151,6 +169,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ has a wrong or missing value at \"%@\"."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tiene un valor incorrecto o faltante en \"%@\"."
           }
         },
         "fr": {
@@ -199,6 +223,12 @@
             "value": "%@ has no \"%@\" (in %@)."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no tiene \"%@\" (en %@)."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -243,6 +273,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ has no \"%@\"."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no tiene \"%@\"."
           }
         },
         "fr": {
@@ -291,6 +327,12 @@
             "value": "%@ has no game.manifest.json."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no tiene game.manifest.json."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -335,6 +377,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ has the same title ID %@ as %@, which is used instead."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tiene el mismo ID de título %@ que %@, que se utiliza en su lugar."
           }
         },
         "fr": {
@@ -383,6 +431,12 @@
             "value": "%@ has the unknown kind \"%@\"."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ tiene el tipo desconocido \"%@\"."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -427,6 +481,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ is a choice without [value, label] options."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ es una elección sin opciones de [valor, etiqueta]."
           }
         },
         "fr": {
@@ -475,6 +535,12 @@
             "value": "%@ is a range without min, max and step."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ es un rango sin mínimo, máximo y paso."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -519,6 +585,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ is not in this game's folder. Install the game again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no está en la carpeta de este juego. Instala el juego nuevamente."
           }
         },
         "fr": {
@@ -567,6 +639,12 @@
             "value": "%@ is not valid JSON."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ no es JSON válido."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -611,6 +689,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "%lld additional content packs"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld paquetes de contenido adicional"
           }
         },
         "fr": {
@@ -659,6 +743,12 @@
             "value": "1 additional content pack"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 paquete de contenido adicional"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -703,6 +793,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Can't read this game"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No puedo leer este juego"
           }
         },
         "fr": {
@@ -751,6 +847,12 @@
             "value": "Cancel"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelar"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -795,6 +897,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Choose a RomFS folder or romfs.img on this device, an external drive, or iCloud Drive."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elija una carpeta RomFS o romfs.img en este dispositivo, una unidad externa o iCloud Drive."
           }
         },
         "fr": {
@@ -843,6 +951,12 @@
             "value": "Controller"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mando"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -887,6 +1001,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Default"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Predeterminado"
           }
         },
         "fr": {
@@ -935,6 +1055,12 @@
             "value": "Done"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listo"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -979,6 +1105,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Game code missing"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta el código del juego"
           }
         },
         "fr": {
@@ -1027,6 +1159,12 @@
             "value": "Game files damaged"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivos del juego dañados"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1071,6 +1209,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Game manifest missing"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta el manifiesto del juego"
           }
         },
         "fr": {
@@ -1119,6 +1263,12 @@
             "value": "Keep holding to quit"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantén pulsado para salir"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1163,6 +1313,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Launching is not available yet."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El lanzamiento aún no está disponible."
           }
         },
         "fr": {
@@ -1211,6 +1367,12 @@
             "value": "Manifest not supported"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manifiesto no compatible"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1255,6 +1417,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "No additional content"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin contenido adicional"
           }
         },
         "fr": {
@@ -1303,6 +1471,12 @@
             "value": "No game data for %@ was found in that folder."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se encontraron datos del juego para %@ en esa carpeta."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1347,6 +1521,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "No update address is set up for this app."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No hay ninguna dirección de actualización configurada para esta aplicación."
           }
         },
         "fr": {
@@ -1395,6 +1575,12 @@
             "value": "OK"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "bien"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1439,6 +1625,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Off"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apagado"
           }
         },
         "fr": {
@@ -1487,6 +1679,12 @@
             "value": "On"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "encendido"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1531,6 +1729,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Only the end of the log is shown."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sólo se muestra el final del registro."
           }
         },
         "fr": {
@@ -1579,6 +1783,12 @@
             "value": "Player %@"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Jugador %@"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1623,6 +1833,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Preparing game…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparando juego..."
           }
         },
         "fr": {
@@ -1671,6 +1887,12 @@
             "value": "Quit"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dejar de fumar"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1715,6 +1937,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Quit %@?"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Salir %@?"
           }
         },
         "fr": {
@@ -1763,6 +1991,12 @@
             "value": "Right stick: drag here"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stick derecho: arrastra aquí"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1807,6 +2041,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Settings list damaged"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista de configuraciones dañada"
           }
         },
         "fr": {
@@ -1855,6 +2095,12 @@
             "value": "Settings list missing"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta la lista de configuraciones"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1899,6 +2145,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Settings list not supported"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lista de configuraciones no compatible"
           }
         },
         "fr": {
@@ -1947,6 +2199,12 @@
             "value": "Shell"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Concha"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -1991,6 +2249,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Some files of %@ could not be deleted."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Algunos archivos de %@ no se pudieron eliminar."
           }
         },
         "fr": {
@@ -2039,6 +2303,12 @@
             "value": "Swap A and B"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Intercambiar A y B"
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2083,6 +2353,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "That folder could not be remembered. Try a different one."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esa carpeta no se pudo recordar. Prueba con uno diferente."
           }
         },
         "fr": {
@@ -2131,6 +2407,12 @@
             "value": "That location could not be remembered. Try a different one."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ese lugar no se podía recordar. Prueba con uno diferente."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2175,6 +2457,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "The folder is named %@ but the manifest says %@."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carpeta se llama %@ pero el manifiesto dice %@."
           }
         },
         "fr": {
@@ -2223,6 +2511,12 @@
             "value": "The folder you chose before is no longer readable. Please choose it again."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carpeta que eligió antes ya no se puede leer. Por favor, selecciónelo nuevamente."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2267,6 +2561,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "The game's code is missing from this app. Rebuild and reinstall it."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta el código del juego en esta aplicación. Reconstrúyalo y reinstálelo."
           }
         },
         "fr": {
@@ -2315,6 +2615,12 @@
             "value": "The game's manifest"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El manifiesto del juego."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2359,6 +2665,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "The location you picked before is no longer readable (the app was signed differently). Please choose it again."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La ubicación que eligió antes ya no es legible (la aplicación se firmó de manera diferente). Por favor, selecciónelo nuevamente."
           }
         },
         "fr": {
@@ -2407,6 +2719,12 @@
             "value": "The manifest lists no modules."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El manifiesto no enumera ningún módulo."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2451,6 +2769,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "The settings list"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La lista de configuraciones"
           }
         },
         "fr": {
@@ -2499,6 +2823,12 @@
             "value": "This app's folder"
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carpeta de esta aplicación."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2543,6 +2873,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "This app's folder has no data for this game yet. Copy it to games/%@ in this app's folder in Files."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carpeta de esta aplicación aún no tiene datos para este juego. Cópialo en games/%@ en la carpeta de esta aplicación en Archivos."
           }
         },
         "fr": {
@@ -2591,6 +2927,12 @@
             "value": "This game has no launcher.json."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego no tiene launcher.json."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2635,6 +2977,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "This game has no log yet. It appears after the game has run."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego aún no tiene registro. Aparece después de que se haya ejecutado el juego."
           }
         },
         "fr": {
@@ -2683,6 +3031,12 @@
             "value": "This game was built for a different version of this app. Update the app or rebuild the game in the launcher on your Mac."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Este juego fue creado para una versión diferente de esta aplicación. Actualiza la aplicación o reconstruye el juego en el iniciador de tu Mac."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2727,6 +3081,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "This game's files are damaged. Rebuild the game in the launcher on your Mac."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los archivos de este juego están dañados. Reconstruye el juego en el iniciador de tu Mac."
           }
         },
         "fr": {
@@ -2775,6 +3135,12 @@
             "value": "This game's folder has no game.manifest.json."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La carpeta de este juego no tiene game.manifest.json."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2819,6 +3185,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "This game's manifest is damaged. Rebuild the game in the launcher on your Mac."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El manifiesto de este juego está dañado. Reconstruye el juego en el iniciador de tu Mac."
           }
         },
         "fr": {
@@ -2867,6 +3239,12 @@
             "value": "This game's manifest is missing. Rebuild the game in the launcher on your Mac."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta el manifiesto de este juego. Reconstruye el juego en el iniciador de tu Mac."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -2911,6 +3289,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "This game's settings list is damaged. Rebuild the game in the launcher on your Mac."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La lista de configuración de este juego está dañada. Reconstruye el juego en el iniciador de tu Mac."
           }
         },
         "fr": {
@@ -2959,6 +3343,12 @@
             "value": "This game's settings list is missing. Rebuild the game in the launcher on your Mac."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Falta la lista de configuraciones de este juego. Reconstruye el juego en el iniciador de tu Mac."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -3003,6 +3393,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "Unknown game"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Juego desconocido"
           }
         },
         "fr": {
@@ -3051,6 +3447,12 @@
             "value": "Unsaved progress will be lost. The app closes. Open it again to get back to your games."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se perderá el progreso no guardado. La aplicación se cierra. Ábrelo de nuevo para volver a tus juegos."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -3095,6 +3497,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "chain \"%@\" is not of the form b-<hex>."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La cadena \"%@\" no tiene la forma b-<hex>."
           }
         },
         "fr": {
@@ -3143,6 +3551,12 @@
             "value": "framework \"%@\" is not a .framework name."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "framework \"%@\" no es un nombre .framework."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -3187,6 +3601,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "game \"%@\" in launcher.json is not 16 hex digits."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El juego \"%@\" en launcher.json no tiene 16 dígitos hexadecimales."
           }
         },
         "fr": {
@@ -3235,6 +3655,12 @@
             "value": "game.manifest.json has schema %lld, this app reads schema %lld."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "game.manifest.json tiene el esquema %lld, esta aplicación lee el esquema %lld."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -3279,6 +3705,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "launcher.json has schema %lld, this app reads schema 1."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "launcher.json tiene el esquema %lld, esta aplicación lee el esquema 1."
           }
         },
         "fr": {
@@ -3327,6 +3759,12 @@
             "value": "launcher.json is for %@, the manifest for %@."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "launcher.json es para %@, el manifiesto para %@."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -3373,6 +3811,12 @@
             "value": "loader \"%@\" is neither FR nor FH."
           }
         },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El cargador \"%@\" no es ni FR ni FH."
+          }
+        },
         "fr": {
           "stringUnit": {
             "state": "translated",
@@ -3417,6 +3861,12 @@
           "stringUnit": {
             "state": "translated",
             "value": "title_id \"%@\" is not 16 hex digits."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "title_id \"%@\" no tiene 16 dígitos hexadecimales."
           }
         },
         "fr": {

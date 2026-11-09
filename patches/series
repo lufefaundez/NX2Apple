@@ -63,3 +63,6 @@
 0096-split-mesh-draws-with-no-task-shader-into-grids.patch
 0097-docs-env-switches-row-for-dm-nvn-bc-alias.patch
 0098-nsp-script-package-names-which-upstream-dropped.patch
+0099-nvn-decode-bc-buffer-to-texture-copies-into-unpa.patch
+0100-support-tvos-compilation-and-dual-tier-icloud-sa.patch
+0101-add-apple-tv-4k-tvos-target-support-a15-cpu-flag.patch

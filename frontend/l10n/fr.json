@@ -89,6 +89,8 @@
   "build.showLibrary": "Voir le jeu",
   "build.start": "Lancer la compilation",
   "build.startGame": "Compiler le jeu",
+  "build.tvos": "Apple TV",
+  "build.tvosNote": "Une seule application sur votre Apple TV 4K pour tous vos jeux.",
   "cheats.alwaysOn": "Toujours actif",
   "cheats.broken": "Mal formé, ne sera pas exécuté",
   "cheats.buildLabel": "Build ID de ce jeu",

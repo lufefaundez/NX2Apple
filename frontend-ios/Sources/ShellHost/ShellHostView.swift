@@ -52,7 +52,9 @@ struct LogView: View {
                     Text(verbatim: log.text ?? hostText("This game has no log yet. It appears after the game has run."))
                         .font(.system(.footnote, design: .monospaced))
                         .foregroundStyle(log.text == nil ? .secondary : .primary)
+                        #if !os(tvOS)
                         .textSelection(.enabled)
+                        #endif
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding()

@@ -93,6 +93,16 @@ package enum SendWhere {
     /// A device's name for a message, "iPhone" when this Mac has not listed it.
     package func deviceName(_ udid: String) -> String { devices.first { $0.id == udid }?.name ?? "iPhone" }
 
+    /// Filter devices based on the active build target (iPhone/iPad for .ios, Apple TV for .tvos).
+    package func devices(for target: String) -> [AppleDevice] {
+        if target == BuildTarget.tvos {
+            return devices.filter { $0.isTV }
+        } else if target == BuildTarget.ios {
+            return devices.filter { !$0.isTV }
+        }
+        return devices
+    }
+
     /// The paired devices and the signing teams, read in the background (devicectl can take a few seconds). A team that is no longer
     /// known is replaced by the first one.
     @discardableResult package func refresh() -> Task<Void, Never> {

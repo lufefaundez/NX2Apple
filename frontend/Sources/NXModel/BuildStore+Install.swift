@@ -31,6 +31,11 @@ extension BuildStore {
         installer.processStarted = { @Sendable p in hop { self.proc = p } }
         // The size and the connection are shown with Continue, "Wait for a cable" and "Not now" (ShellCopyCard)
         let target = devices
+        installer.platform = self.target == BuildTarget.tvos ? "tvos" : "ios"
+        let bridge = SaveSyncBridge(defaults: defaults)
+        installer.saveBridgeURL = bridge.primaryURL()
+        installer.saveBridgeFallbackURL = bridge.fallbackURL()
+        installer.saveBridgeToken = bridge.token
         installer.decideCopy = { plan in target.askCopy(plan) }
         installer.waiting = { on in target.setWaiting(on) }
         installer.waitCancelled = { target.waitCancelled }

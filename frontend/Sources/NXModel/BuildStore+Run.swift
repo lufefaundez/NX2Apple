@@ -174,6 +174,9 @@ extension BuildStore {
         } else {
             // Only the game's framework: the one shared app is made and signed after the script (installShell)
             args += ShellInstall.buildArguments(workDir: workDir, team: exportsShell ? "" : devices.signingTeam)
+            if target == BuildTarget.tvos {
+                args += ["--platform", "tvos"]
+            }
         }
         // The archive step packs whatever folder the build reported; without --work-dir that is the
         // script's default, which is the same workDir unless a separate output folder was chosen.

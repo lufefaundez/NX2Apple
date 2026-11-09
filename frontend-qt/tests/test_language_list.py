@@ -48,10 +48,10 @@ OLD_INPUTS = [
 
 class PickerList(unittest.TestCase):
     def test_the_button_cycles_the_five_languages_in_the_order_it_always_had_then_italian_and_japanese(self):
-        self.assertEqual([lang.code for lang in Lang.all()], ['zh', 'en', 'sv', 'de', 'fr', 'it', 'ja'])
-        self.assertEqual([lang.name for lang in Lang.all()], ['中文', 'English', 'Svenska', 'Deutsch', 'Français', 'Italiano', '日本語'])
-        self.assertEqual([Lang(c).other.code for c in ('zh', 'en', 'sv', 'de', 'fr', 'it', 'ja')], ['en', 'sv', 'de', 'fr', 'it', 'ja', 'zh'])
-        self.assertEqual([Lang(c).toggle_label for c in ('zh', 'en', 'sv', 'de', 'fr', 'it', 'ja')], ['EN', 'Svenska', 'Deutsch', 'Français', 'Italiano', '日本語', '中文'])
+        self.assertEqual([lang.code for lang in Lang.all()], ['zh', 'en', 'sv', 'de', 'fr', 'es', 'it', 'ja'])
+        self.assertEqual([lang.name for lang in Lang.all()], ['中文', 'English', 'Svenska', 'Deutsch', 'Français', 'Español', 'Italiano', '日本語'])
+        self.assertEqual([Lang(c).other.code for c in ('zh', 'en', 'sv', 'de', 'fr', 'es', 'it', 'ja')], ['en', 'sv', 'de', 'fr', 'es', 'it', 'ja', 'zh'])
+        self.assertEqual([Lang(c).toggle_label for c in ('zh', 'en', 'sv', 'de', 'fr', 'es', 'it', 'ja')], ['EN', 'Svenska', 'Deutsch', 'Français', 'Español', 'Italiano', '日本語', '中文'])
 
     def test_find_knows_a_code_only_when_a_file_has_it(self):
         self.assertEqual(Lang.find('sv'), Lang('sv'))
@@ -72,6 +72,7 @@ class Detection(unittest.TestCase):
             if before == 'en' and got in added:
                 continue
             self.assertEqual(got, before, low)
+        self.assertEqual(Lang.detect('es_es').code, 'es')
         self.assertEqual(Lang.detect('it_it').code, 'it')
         self.assertEqual(Lang.detect('ja_jp').code, 'ja')
 
@@ -99,7 +100,7 @@ class SixthLanguage(unittest.TestCase):
 
     def test_it_is_in_the_list_after_the_ordered_ones_and_a_prefix_selects_it(self):
         languages, catalogs = l10n.read(self.tmp)
-        self.assertEqual([lang.code for lang in languages], ['zh', 'en', 'sv', 'de', 'fr', 'it', 'ja', 'xx'])
+        self.assertEqual([lang.code for lang in languages], ['zh', 'en', 'sv', 'de', 'fr', 'es', 'it', 'ja', 'xx'])
         self.assertEqual(languages[-1].name, 'Xenia')
         self.assertEqual(Lang.detect('xx_yy', languages), Lang('xx'))
         self.assertEqual(Lang.detect('xenian_land', languages), Lang('xx'))

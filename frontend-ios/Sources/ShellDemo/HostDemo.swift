@@ -36,7 +36,7 @@ struct HostDemoScreen: View {
                                      environment: HostEnvironment(chain: "b-3f9a2c"),
                                      updateURL: URL(string: "https://github.com/LNPANDY/NX2Apple/releases"),
                                      defaults: { UserDefaults(suiteName: suite + $0) ?? .standard })
-        #if canImport(UIKit)
+        #if canImport(UIKit) && !os(tvOS)
         _model = State(initialValue: ShellHostModel(config: config, picker: DocumentFolderPicker()))
         #else
         _model = State(initialValue: ShellHostModel(config: config))

@@ -1145,8 +1145,8 @@ def ascii_temp_dir(prefix: str = 'nspb-'):
             return False
     candidates = [tempfile.gettempdir()]
     if os.name == 'nt' or 'PUBLIC' in os.environ:
-        candidates += [os.environ.get('PUBLIC', r'C:\Users\Public') + (r'\Temp' if os.name == 'nt' else '/Temp'),
-                       r'C:\Windows\Temp', 'C:\\Temp']
+        pub = os.environ.get('PUBLIC', r'C:\Users\Public')
+        candidates += [os.path.join(pub, 'Temp'), r'C:\Windows\Temp', 'C:\\Temp']
     for allow_space in (False, True):
         for base in candidates:
             if not base or not ok(base) or (not allow_space and ' ' in base):

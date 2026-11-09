@@ -69,6 +69,7 @@ struct ShellSettingsView: View {
                     }.id("shs.top")
                 }
 
+                #if !os(tvOS)
                 Section {
                     Button(action: actions.onPickShellData) {
                         LabeledContent {
@@ -115,6 +116,7 @@ struct ShellSettingsView: View {
                 Section {
                     TouchArrangeRow(arranged: !store.touchLayout.isEmpty)
                 }
+                #endif
 
                 Section {
                     Toggle(isOn: Binding(get: { store.performanceHUD == true }, set: { store.storePerformanceHUD($0); revision += 1 })) {
@@ -135,7 +137,9 @@ struct ShellSettingsView: View {
             }
             .formStyle(.grouped)
             .labelStyle(SettingsRowLabelStyle())
+            #if !os(tvOS)
             .scrollContentBackground(.hidden)
+            #endif
             .background(ShellPalette.background)
             .onChange(of: focus.id) { _, id in
                 guard let id, id.hasPrefix("shs.") else { return }
