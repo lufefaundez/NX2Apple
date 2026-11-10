@@ -19,6 +19,8 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public static let touchStickPlaces = ["corner", "higher", "inward"]
     public static let touchModeKey = "touchMode" // 2d/3d, separate from saved positions
     public static let touchLayoutKey = "touchLayout"             // the player's arrangement: DM_TOUCH_LAYOUT for every game
+    public static let saveBridgeURLKey = "saveBridgeURL"
+    public static let saveBridgeTokenKey = "saveBridgeToken"
 
     /// The store the app reads and writes. Tests and previews swap it.
     nonisolated(unsafe) public static var current = ShellSettingsStore()
@@ -44,6 +46,29 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public func clearDataFolderName() { defaults.removeObject(forKey: Self.dataFolderNameKey) }
     public func clearCloudSavesFolderName() { defaults.removeObject(forKey: Self.cloudSavesNameKey) }
     public func storePerformanceHUD(_ on: Bool) { defaults.set(on, forKey: Self.performanceHUDKey) }
+
+    public var saveBridgeURL: String? {
+        guard let v = defaults.string(forKey: Self.saveBridgeURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return nil }
+        return v
+    }
+    public var saveBridgeToken: String? {
+        guard let v = defaults.string(forKey: Self.saveBridgeTokenKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else { return nil }
+        return v
+    }
+    public func storeSaveBridgeURL(_ url: String?) {
+        let trimmed = url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { defaults.removeObject(forKey: Self.saveBridgeURLKey) }
+        else { defaults.set(trimmed, forKey: Self.saveBridgeURLKey) }
+    }
+    public func storeSaveBridgeToken(_ token: String?) {
+        let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { defaults.removeObject(forKey: Self.saveBridgeTokenKey) }
+        else { defaults.set(trimmed, forKey: Self.saveBridgeTokenKey) }
+    }
+    public func clearSaveBridge() {
+        defaults.removeObject(forKey: Self.saveBridgeURLKey)
+        defaults.removeObject(forKey: Self.saveBridgeTokenKey)
+    }
 
     /// The touch controls' size for every game: small, medium (the built-in size) or large.
     public var touchSize: String {

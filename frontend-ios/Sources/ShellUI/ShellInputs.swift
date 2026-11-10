@@ -105,9 +105,13 @@ public struct GameDetail: Identifiable, Equatable, Sendable {
     public var cloudFromShell: Bool
     /// The shell settings have a cloud-saves folder this game does not use now, so the game can follow it.
     public var cloudCanUseShell: Bool
+    /// Manual cloud save sync status and in-progress flag for this game.
+    public var cloudSyncing: Bool
+    public var cloudSyncStatus: String
     public init(game: GameTile, sections: [SettingSection] = [], dataSource: String = "", dataNote: String = "",
                 cloudSaves: String? = nil, cloudNote: String = "", dlc: String = "", hasModifiedSettings: Bool = false,
-                dataFromShell: Bool = false, cloudFromShell: Bool = false, cloudCanUseShell: Bool = false) {
+                dataFromShell: Bool = false, cloudFromShell: Bool = false, cloudCanUseShell: Bool = false,
+                cloudSyncing: Bool = false, cloudSyncStatus: String = "") {
         self.game = game
         self.sections = sections
         self.dataSource = dataSource
@@ -119,6 +123,8 @@ public struct GameDetail: Identifiable, Equatable, Sendable {
         self.dataFromShell = dataFromShell
         self.cloudFromShell = cloudFromShell
         self.cloudCanUseShell = cloudCanUseShell
+        self.cloudSyncing = cloudSyncing
+        self.cloudSyncStatus = cloudSyncStatus
     }
 }
 
@@ -241,6 +247,11 @@ public struct ShellActions {
     public var onButtonTest: (Bool) -> Void
     /// Deletes the game's data on this device and takes it off the list. `saves`: its saves go too.
     public var onDeleteGame: (_ gameID: String, _ saves: Bool) -> Void
+    /// Manual save sync and runtime Save Bridge configuration.
+    public var onSyncCloudSaves: (String) -> Void
+    public var onSyncAllCloudSaves: () -> Void
+    public var onSaveBridgeChange: (_ url: String, _ token: String) -> Void
+    public var onDiscoverSaveBridge: () -> Void
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
@@ -252,7 +263,11 @@ public struct ShellActions {
                 onClearShellCloud: @escaping () -> Void = {},
                 onGlobalPadMapChange: @escaping (String, String) -> Void = { _, _ in },
                 onGlobalPadMapReset: @escaping () -> Void = {}, onButtonTest: @escaping (Bool) -> Void = { _ in },
-                onDeleteGame: @escaping (String, Bool) -> Void = { _, _ in }) {
+                onDeleteGame: @escaping (String, Bool) -> Void = { _, _ in },
+                onSyncCloudSaves: @escaping (String) -> Void = { _ in },
+                onSyncAllCloudSaves: @escaping () -> Void = {},
+                onSaveBridgeChange: @escaping (String, String) -> Void = { _, _ in },
+                onDiscoverSaveBridge: @escaping () -> Void = {}) {
         self.onSelect = onSelect
         self.onPlay = onPlay
         self.onChange = onChange
@@ -273,5 +288,9 @@ public struct ShellActions {
         self.onGlobalPadMapReset = onGlobalPadMapReset
         self.onButtonTest = onButtonTest
         self.onDeleteGame = onDeleteGame
+        self.onSyncCloudSaves = onSyncCloudSaves
+        self.onSyncAllCloudSaves = onSyncAllCloudSaves
+        self.onSaveBridgeChange = onSaveBridgeChange
+        self.onDiscoverSaveBridge = onDiscoverSaveBridge
     }
 }

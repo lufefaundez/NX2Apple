@@ -96,6 +96,10 @@ public struct ShellHostConfig: Sendable {
     public var log: LogPresentation?
     /// Play is preparing the game's resources or handing over to the engine.
     public private(set) var launchingGame = false
+    /// Manual cloud save sync and Wi-Fi Save Bridge discovery state.
+    public private(set) var shellCloudSyncing = false
+    public private(set) var shellCloudStatus = ""
+    public private(set) var bridgeDiscovering = false
 
     public private(set) var globalPadMap = PadMap()
     /// The last controller state, sent only while the button test is open.
@@ -105,9 +109,13 @@ public struct ShellHostConfig: Sendable {
     @ObservationIgnored private let launcher: any GameLauncher
     @ObservationIgnored private let picker: any FolderPicker
     @ObservationIgnored private let adapter = GamepadAdapter()
+    @ObservationIgnored private let urlSession: URLSession
+    @ObservationIgnored private let discoverBridge: @Sendable () async -> String?
     @ObservationIgnored private var dataStores: [String: BookmarkStore] = [:]
     @ObservationIgnored private var cloudStores: [String: BookmarkStore] = [:]
     @ObservationIgnored private var artwork: [URL: Artwork] = [:]
+    @ObservationIgnored private var syncingGames: Set<String> = []
+    @ObservationIgnored private var gameSyncStatus: [String: String] = [:]
     /// The shell-level settings every game falls back to (game > shell > built-in).
     @ObservationIgnored public let shellSettings: ShellSettingsStore
     @ObservationIgnored private let shellData: BookmarkStore
@@ -120,11 +128,14 @@ public struct ShellHostConfig: Sendable {
     @ObservationIgnored nonisolated(unsafe) private var defaultsObserver: (any NSObjectProtocol)?
 
     public init(config: ShellHostConfig, launcher: any GameLauncher = StubGameLauncher(), picker: any FolderPicker = NoFolderPicker(),
-                shellSettings: ShellSettingsStore = .current) {
+                shellSettings: ShellSettingsStore = .current, urlSession: URLSession = .shared,
+                discoverBridge: @escaping @Sendable () async -> String? = { await CloudSaveSyncService.discoverSaveBridge() }) {
         self.config = config
         self.launcher = launcher
         self.picker = picker
         self.shellSettings = shellSettings
+        self.urlSession = urlSession
+        self.discoverBridge = discoverBridge
         shellData = BookmarkStore(defaults: shellSettings.defaults, key: ShellSettingsStore.dataFolderKey)
         shellCloud = BookmarkStore(defaults: shellSettings.defaults, key: ShellSettingsStore.cloudSavesKey)
         shellChoices = Self.choices(of: shellSettings)
@@ -142,7 +153,12 @@ public struct ShellHostConfig: Sendable {
 
     /// Shell choices that change the displayed game defaults.
     private static func choices(of settings: ShellSettingsStore) -> [String] {
-        [settings.gameDefaults.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","), settings.padMap.envValue ?? ""]
+        [
+            settings.gameDefaults.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","),
+            settings.padMap.envValue ?? "",
+            settings.saveBridgeURL ?? "",
+            settings.saveBridgeToken ?? "",
+        ]
     }
 
     /// Rebuilds the details in place after a shell folder, overlay or controller mapping changes.
@@ -230,7 +246,28 @@ public struct ShellHostConfig: Sendable {
         return s
     }
 
-    private enum CloudSaves { case off, own(URL), stale, shell(URL), none }
+    private enum CloudSaves: Equatable { case off, own(URL), stale, shell(URL), none }
+
+    private var effectiveSaveSyncTarget: String? {
+        if let runtime = CloudSaveSyncService.normalizeBridgeURL(shellSettings.saveBridgeURL) {
+            return runtime
+        }
+        return config.remoteSaveSyncTarget
+    }
+
+    private var effectiveSaveSyncFallback: String? {
+        if CloudSaveSyncService.normalizeBridgeURL(shellSettings.saveBridgeURL) != nil {
+            return nil
+        }
+        return config.remoteSaveSyncFallback
+    }
+
+    private var effectiveSaveSyncToken: String? {
+        if let tok = shellSettings.saveBridgeToken, !tok.isEmpty {
+            return tok
+        }
+        return config.saveBridgeToken
+    }
 
     /// Where the game's cloud saves go: off when the player turned them off for the game, then the game's own folder,
     /// then the shell settings' folder.
@@ -287,13 +324,13 @@ public struct ShellHostConfig: Sendable {
         case .stale: cloudNote = hostText("The folder you chose before is no longer readable. Please choose it again.")
         case .shell(let url): cloud = hostText("\(url.lastPathComponent) (from Settings)"); cloudFromShell = true
         case .none:
-            if config.remoteSaveSyncTarget != nil {
-                cloud = "iCloud"
+            if let target = effectiveSaveSyncTarget {
+                cloud = target.hasPrefix("cloudkit://") ? "iCloud" : hostText("Save server")
                 cloudFromShell = true
             }
         case .off: break
         }
-        var shellFolder = config.remoteSaveSyncTarget != nil
+        var shellFolder = effectiveSaveSyncTarget != nil
         if case .url = shellCloud.resolve() { shellFolder = true }
         let fromShell = Set(profile.settings.filter(store.isFromShell).map(\.env))
         let pad = GamePadMapStore(defaults: config.defaults(entry.id))
@@ -305,7 +342,9 @@ public struct ShellHostConfig: Sendable {
             dataSource: dataSource(data), dataNote: dataNote(data, found: data.found),
             cloudSaves: cloud, cloudNote: cloudNote, dlc: dlc(data), hasModifiedSettings: store.hasModifiedSettings || !pad.entries.isEmpty,
             dataFromShell: data.source == .shell, cloudFromShell: cloudFromShell,
-            cloudCanUseShell: shellFolder && !cloudFromShell)
+            cloudCanUseShell: shellFolder && !cloudFromShell,
+            cloudSyncing: syncingGames.contains(entry.id),
+            cloudSyncStatus: gameSyncStatus[entry.id] ?? "")
     }
 
     private func dataSource(_ data: DataResolution) -> String {
@@ -359,7 +398,11 @@ public struct ShellHostConfig: Sendable {
             },
             onGlobalPadMapReset: { [weak self] in self?.shellSettings.resetPadMap(); self?.refreshAll() },
             onButtonTest: { [weak self] open in self?.buttonTest(open) },
-            onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) })
+            onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) },
+            onSyncCloudSaves: { [weak self] id in self?.syncCloudSaves(id) },
+            onSyncAllCloudSaves: { [weak self] in self?.syncAllCloudSaves() },
+            onSaveBridgeChange: { [weak self] url, token in self?.saveBridgeChanged(url: url, token: token) },
+            onDiscoverSaveBridge: { [weak self] in self?.discoverSaveBridge() })
     }
 
     public func change(_ id: String, setting: String, value: String) {
@@ -409,7 +452,10 @@ public struct ShellHostConfig: Sendable {
 
     func pickCloudSavesNow(_ id: String) async {
         guard let url = await picker.pickFolder() else { return }
-        if cloudStore(id).store(url) { config.defaults(id).removeObject(forKey: GameDefaults.cloudSavesOffKey) }
+        if cloudStore(id).store(url) {
+            config.defaults(id).removeObject(forKey: GameDefaults.cloudSavesOffKey)
+            gameSyncStatus.removeValue(forKey: id)
+        }
         else { notice = hostText("That folder could not be remembered. Try a different one.") }
         refresh(id)
     }
@@ -431,6 +477,7 @@ public struct ShellHostConfig: Sendable {
     public func disableCloudSaves(_ id: String) {
         cloudStore(id).clear()
         config.defaults(id).set(true, forKey: GameDefaults.cloudSavesOffKey)
+        gameSyncStatus.removeValue(forKey: id)
         refresh(id)
     }
 
@@ -438,6 +485,7 @@ public struct ShellHostConfig: Sendable {
     public func useShellCloudSaves(_ id: String) {
         cloudStore(id).clear()
         config.defaults(id).removeObject(forKey: GameDefaults.cloudSavesOffKey)
+        gameSyncStatus.removeValue(forKey: id)
         refresh(id)
     }
 
@@ -450,7 +498,135 @@ public struct ShellHostConfig: Sendable {
     func clearShellCloud() {
         shellCloud.clear()
         shellSettings.clearCloudSavesFolderName()
+        shellCloudStatus = ""
+        gameSyncStatus.removeAll()
         refreshAll()
+    }
+
+    // MARK: Manual cloud save sync & Save Bridge
+
+    private func remoteTarget(for id: String) -> CloudSaveSyncService.RemoteTarget? {
+        switch cloudSaves(id) {
+        case .own(let url), .shell(let url):
+            return .folder(url)
+        case .none:
+            return CloudSaveSyncService.makeRemoteTarget(target: effectiveSaveSyncTarget, fallback: effectiveSaveSyncFallback)
+        case .off, .stale:
+            return nil
+        }
+    }
+
+    public func saveBridgeChanged(url: String, token: String) {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedURL.isEmpty {
+            shellSettings.storeSaveBridgeURL(nil)
+        } else if let normalized = CloudSaveSyncService.normalizeBridgeURL(trimmedURL) {
+            shellSettings.storeSaveBridgeURL(normalized)
+        } else {
+            notice = hostText("Enter a valid server address, such as 192.168.1.10:47921.")
+        }
+        shellSettings.storeSaveBridgeToken(trimmedToken)
+        shellCloudStatus = ""
+        gameSyncStatus.removeAll()
+        refreshAll()
+    }
+
+    public func discoverSaveBridge() {
+        Task { await discoverSaveBridgeNow() }
+    }
+
+    func discoverSaveBridgeNow() async {
+        guard !bridgeDiscovering else { return }
+        bridgeDiscovering = true
+        defer { bridgeDiscovering = false }
+        if let found = await discoverBridge() {
+            shellSettings.storeSaveBridgeURL(found)
+            shellCloudStatus = hostText("Found Mac on Wi-Fi")
+            refreshAll()
+        } else {
+            shellCloudStatus = hostText("No Mac found on Wi-Fi")
+        }
+    }
+
+    public func syncCloudSaves(_ id: String) {
+        Task { await syncCloudSavesNow(id) }
+    }
+
+    func syncCloudSavesNow(_ id: String) async {
+        guard !syncingGames.contains(id) else { return }
+        if cloudSaves(id) == .stale {
+            gameSyncStatus[id] = hostText("The folder you chose before is no longer readable. Please choose it again.")
+            refresh(id)
+            return
+        }
+        guard let target = remoteTarget(for: id) else {
+            gameSyncStatus[id] = hostText("No save destination configured")
+            refresh(id)
+            return
+        }
+        syncingGames.insert(id)
+        gameSyncStatus[id] = ""
+        refresh(id)
+        let outcome = await CloudSaveSyncService.syncGame(
+            titleID: id, gameAppFolder: appFolder(for: id), target: target,
+            token: effectiveSaveSyncToken, session: urlSession)
+        syncingGames.remove(id)
+        gameSyncStatus[id] = CloudSaveSyncService.statusMessage(for: outcome)
+        refresh(id)
+    }
+
+    public func syncAllCloudSaves() {
+        Task { await syncAllCloudSavesNow() }
+    }
+
+    func syncAllCloudSavesNow() async {
+        guard !shellCloudSyncing else { return }
+        shellCloudSyncing = true
+        shellCloudStatus = ""
+        let targets: [(id: String, target: CloudSaveSyncService.RemoteTarget)] = entries.compactMap { entry in
+            guard let t = remoteTarget(for: entry.id) else { return nil }
+            return (entry.id, t)
+        }
+        guard !targets.isEmpty else {
+            shellCloudSyncing = false
+            shellCloudStatus = hostText("No save destination configured")
+            return
+        }
+        var outcomes: [CloudSaveSyncService.SyncOutcome] = []
+        for (id, target) in targets {
+            if syncingGames.contains(id) { continue }
+            syncingGames.insert(id)
+            refresh(id)
+            let outcome = await CloudSaveSyncService.syncGame(
+                titleID: id, gameAppFolder: appFolder(for: id), target: target,
+                token: effectiveSaveSyncToken, session: urlSession)
+            syncingGames.remove(id)
+            gameSyncStatus[id] = CloudSaveSyncService.statusMessage(for: outcome)
+            refresh(id)
+            outcomes.append(outcome)
+        }
+        if outcomes.count == 1, let only = outcomes.first {
+            shellCloudStatus = CloudSaveSyncService.statusMessage(for: only)
+        } else if let failed = outcomes.compactMap({ if case .failed(let reason) = $0 { return reason } else { return nil } }).first {
+            shellCloudStatus = hostText("Save sync failed: \(failed)")
+        } else {
+            let updated = outcomes.reduce(0) { count, outcome in
+                switch outcome {
+                case .downloaded, .uploaded: count + 1
+                default: count
+                }
+            }
+            let upToDate = outcomes.filter { $0 == .upToDate }.count
+            if updated > 0 {
+                shellCloudStatus = hostText("Updated saves: \(String(updated))")
+            } else if upToDate > 0 {
+                shellCloudStatus = hostText("All saves up to date")
+            } else {
+                shellCloudStatus = hostText("No save here or in the cloud yet")
+            }
+        }
+        shellCloudSyncing = false
     }
 
     public func showLog(_ id: String) {
@@ -514,9 +690,9 @@ public struct ShellHostConfig: Sendable {
         switch cloudSaves(id) {
         case .own(let url), .shell(let url): cloud = url
         case .none:
-            remoteTarget = config.remoteSaveSyncTarget
-            remoteFallback = config.remoteSaveSyncFallback
-            remoteToken = config.saveBridgeToken
+            remoteTarget = effectiveSaveSyncTarget
+            remoteFallback = effectiveSaveSyncFallback
+            remoteToken = effectiveSaveSyncToken
         case .off, .stale: break
         }
         // Remembered when Play is triggered, even if the launcher then fails (the stub). The order changes at the next load.

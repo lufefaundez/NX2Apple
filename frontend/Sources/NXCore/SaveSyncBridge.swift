@@ -8,20 +8,38 @@ package final class SaveSyncBridge: @unchecked Sendable {
     package static let defaultPort: UInt16 = 47921
     package static let tokenKey = "saveBridgeToken"
     package static let icloudFolder = "nxnative Saves"
+    package static let bonjourType = "_nx2apple-saves._tcp"
+    private static let maxHeaderBytes = 65_536
+    private static let maxBodyBytes = 256 * 1024 * 1024
+    private static let headerDelimiter = Data("\r\n\r\n".utf8)
 
     package let port: UInt16
     package let token: String
+    private let savesRootOverride: URL?
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "org.nxnative.save-bridge", qos: .utility)
+    private let portLock = NSLock()
+    private var _boundPort: UInt16
+    package var onReady: (@Sendable (UInt16) -> Void)?
 
-    package init(port: UInt16 = SaveSyncBridge.defaultPort, token: String? = nil, defaults: UserDefaults = .standard) {
+    package var boundPort: UInt16 {
+        portLock.lock()
+        defer { portLock.unlock() }
+        return _boundPort
+    }
+
+    package init(port: UInt16 = SaveSyncBridge.defaultPort, token: String? = nil,
+                 defaults: UserDefaults = .standard, savesRoot: URL? = nil) {
         self.port = port
+        self._boundPort = port
+        self.savesRootOverride = savesRoot
         if let token, !token.isEmpty {
             self.token = token
         } else if let saved = defaults.string(forKey: Self.tokenKey), !saved.isEmpty {
             self.token = saved
         } else {
             let gen = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            defaults.set(gen, forKey: Self.tokenKey)
             self.token = gen
         }
     }
@@ -48,21 +66,18 @@ package final class SaveSyncBridge: @unchecked Sendable {
 
     package func primaryURL() -> String {
         let host = Self.localIPAddress() ?? "127.0.0.1"
-        return "http://\(host):\(port)/saves/"
+        return "http://\(host):\(boundPort)/saves/"
     }
 
     package func fallbackURL() -> String {
         let name = Host.current().name ?? "localhost"
         let host = name.hasSuffix(".local") ? name : "\(name).local"
-        return "http://\(host):\(port)/saves/"
+        return "http://\(host):\(boundPort)/saves/"
     }
 
     package static func savesRoot(home: String = NSHomeDirectory()) -> URL {
-        let base = home + "/Library/Mobile Documents/com~apple~CloudDocs"
-        if FileManager.default.fileExists(atPath: base + "/NX Save data") {
-            return URL(fileURLWithPath: base + "/NX Save data", isDirectory: true)
-        }
-        return URL(fileURLWithPath: base + "/" + icloudFolder, isDirectory: true)
+        let resolved = CloudSaveSync.defaultICloudFolder(home: home)
+        return URL(fileURLWithPath: resolved, isDirectory: true)
     }
 
     package func start() {
@@ -70,12 +85,20 @@ package final class SaveSyncBridge: @unchecked Sendable {
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-            l.service = NWListener.Service(type: "_nx2apple-saves._tcp")
+            let endpointPort: NWEndpoint.Port = port == 0 ? .any : (NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: Self.defaultPort)!)
+            let l = try NWListener(using: params, on: endpointPort)
+            l.service = NWListener.Service(type: Self.bonjourType)
             l.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
-            l.stateUpdateHandler = { _ in }
+            l.stateUpdateHandler = { [weak self] state in
+                guard let self, case .ready = state, let actual = l.port?.rawValue else { return }
+                self.portLock.lock()
+                self._boundPort = actual
+                let callback = self.onReady
+                self.portLock.unlock()
+                callback?(actual)
+            }
             l.start(queue: queue)
             self.listener = l
         } catch {
@@ -90,26 +113,37 @@ package final class SaveSyncBridge: @unchecked Sendable {
 
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
-        receiveRequest(connection)
+        receiveHeaders(connection, buffer: Data())
     }
 
-    private func receiveRequest(_ connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, isComplete, _ in
-            guard let self, let data = content, !data.isEmpty else {
-                connection.cancel()
+    private func receiveHeaders(_ connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, isComplete, error in
+            guard let self else { connection.cancel(); return }
+            var acc = buffer
+            if let content { acc.append(content) }
+            if let headerEnd = acc.range(of: Self.headerDelimiter) {
+                self.processRequest(acc, headerEnd: headerEnd, connection: connection)
                 return
             }
-            self.processRequest(data, connection: connection)
+            if acc.count > Self.maxHeaderBytes {
+                self.sendResponse(connection, status: 431, message: "Request Header Fields Too Large")
+                return
+            }
+            if error != nil || isComplete || content == nil || content?.isEmpty == true {
+                if !acc.isEmpty {
+                    self.sendResponse(connection, status: 400, message: "Bad Request")
+                } else {
+                    connection.cancel()
+                }
+                return
+            }
+            self.receiveHeaders(connection, buffer: acc)
         }
     }
 
-    private func processRequest(_ data: Data, connection: NWConnection) {
-        guard let headerEnd = data.range(of: Data("\r\n\r\n".utf8)) else {
-            sendResponse(connection, status: 400, message: "Bad Request")
-            return
-        }
+    private func processRequest(_ data: Data, headerEnd: Range<Data.Index>, connection: NWConnection) {
         let headerData = data[..<headerEnd.lowerBound]
-        let bodyData = data[headerEnd.upperBound...]
+        let bodyData = Data(data[headerEnd.upperBound...])
         guard let headerStr = String(data: headerData, encoding: .utf8) else {
             sendResponse(connection, status: 400, message: "Bad Request")
             return
@@ -124,17 +158,18 @@ package final class SaveSyncBridge: @unchecked Sendable {
             sendResponse(connection, status: 400, message: "Bad Request")
             return
         }
-        let method = String(reqParts[0])
-        let path = String(reqParts[1])
+        let method = String(reqParts[0]).uppercased()
+        let rawTarget = String(reqParts[1])
+        let path = rawTarget.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? rawTarget
 
         var authHeader: String?
-        var contentLength: Int?
+        var rawContentLength: String?
         for line in lines.dropFirst() {
-            if line.lowercased().hasPrefix("authorization:") {
-                authHeader = line.dropFirst("authorization:".count).trimmingCharacters(in: .whitespaces)
-            } else if line.lowercased().hasPrefix("content-length:") {
-                contentLength = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces))
-            }
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let val = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if key == "authorization" { authHeader = val }
+            else if key == "content-length" { rawContentLength = val }
         }
 
         let expectedAuth = "Bearer \(token)"
@@ -148,58 +183,116 @@ package final class SaveSyncBridge: @unchecked Sendable {
             return
         }
         let subpath = String(path.dropFirst("/saves/".count))
-        let pathParts = subpath.split(separator: "/")
-        guard pathParts.count == 2, pathParts[1] == "save.dmsync" else {
+        let pathParts = subpath.split(separator: "/", omittingEmptySubsequences: false)
+        guard pathParts.count == 2,
+              !pathParts[0].isEmpty,
+              pathParts[0] != ".",
+              pathParts[0] != "..",
+              pathParts[1] == "save.dmsync" else {
             sendResponse(connection, status: 400, message: "Invalid Save Path")
             return
         }
         let titleID = String(pathParts[0]).uppercased()
-        let gameSaveDir = Self.savesRoot().appendingPathComponent(titleID, isDirectory: true)
+        let root = savesRootOverride ?? Self.savesRoot()
+        let gameSaveDir = root.appendingPathComponent(titleID, isDirectory: true)
         let saveFile = gameSaveDir.appendingPathComponent("save.dmsync")
 
         if method == "GET" {
-            guard FileManager.default.fileExists(atPath: saveFile.path),
-                  let fileData = try? Data(contentsOf: saveFile) else {
+            guard let fileData = readSaveFile(saveFile) else {
                 sendResponse(connection, status: 404, message: "Save Not Found")
                 return
             }
             sendDataResponse(connection, data: fileData)
         } else if method == "PUT" {
-            if let cl = contentLength, bodyData.count < cl {
-                let fullBody = Data(bodyData)
-                readRemainingBody(connection, expected: cl - bodyData.count, accumulator: fullBody) { [weak self] finalData in
-                    guard let self else { return }
+            guard let rawContentLength else {
+                sendResponse(connection, status: 411, message: "Length Required")
+                return
+            }
+            guard let cl = Int(rawContentLength), cl >= 0 else {
+                sendResponse(connection, status: 400, message: "Invalid Content-Length")
+                return
+            }
+            guard cl <= Self.maxBodyBytes else {
+                sendResponse(connection, status: 413, message: "Payload Too Large")
+                return
+            }
+            if bodyData.count >= cl {
+                writeSaveFile(saveFile, inDir: gameSaveDir, data: Data(bodyData.prefix(cl)), connection: connection)
+            } else {
+                readRemainingBody(connection, totalLength: cl, accumulator: bodyData) { [weak self] finalData in
+                    guard let self else { connection.cancel(); return }
+                    guard let finalData else {
+                        self.sendResponse(connection, status: 400, message: "Truncated Request Body")
+                        return
+                    }
                     self.writeSaveFile(saveFile, inDir: gameSaveDir, data: finalData, connection: connection)
                 }
-            } else {
-                writeSaveFile(saveFile, inDir: gameSaveDir, data: Data(bodyData), connection: connection)
             }
         } else {
             sendResponse(connection, status: 405, message: "Method Not Allowed")
         }
     }
 
-    private func readRemainingBody(_ connection: NWConnection, expected: Int, accumulator: Data, completion: @escaping (Data) -> Void) {
-        var acc = accumulator
-        connection.receive(minimumIncompleteLength: 1, maximumLength: expected) { [weak self] content, _, _, _ in
-            if let c = content { acc.append(c) }
-            if acc.count >= expected {
-                completion(acc)
-            } else if let self, let c = content, !c.isEmpty {
-                self.readRemainingBody(connection, expected: expected - c.count, accumulator: acc, completion: completion)
+    private func readRemainingBody(_ connection: NWConnection, totalLength: Int, accumulator: Data,
+                                   completion: @escaping (Data?) -> Void) {
+        let needed = totalLength - accumulator.count
+        guard needed > 0 else {
+            completion(Data(accumulator.prefix(totalLength)))
+            return
+        }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: min(needed, 262_144)) { [weak self] content, _, isComplete, error in
+            var acc = accumulator
+            if let content { acc.append(content) }
+            if acc.count >= totalLength {
+                completion(Data(acc.prefix(totalLength)))
+            } else if error != nil || isComplete || content == nil || content?.isEmpty == true {
+                completion(nil)
+            } else if let self {
+                self.readRemainingBody(connection, totalLength: totalLength, accumulator: acc, completion: completion)
             } else {
-                completion(acc)
+                completion(nil)
             }
         }
     }
 
+    private func readSaveFile(_ file: URL) -> Data? {
+        let fm = FileManager.default
+        let placeholder = file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).icloud")
+        guard fm.fileExists(atPath: file.path) || fm.fileExists(atPath: placeholder.path) else {
+            return nil
+        }
+        try? fm.startDownloadingUbiquitousItem(at: file)
+        var coordError: NSError?
+        var loaded: Data?
+        NSFileCoordinator(filePresenter: nil).coordinate(readingItemAt: file, options: [], error: &coordError) { coordURL in
+            loaded = try? Data(contentsOf: coordURL)
+        }
+        return loaded
+    }
+
     private func writeSaveFile(_ file: URL, inDir dir: URL, data: Data, connection: NWConnection) {
+        let fm = FileManager.default
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let tempFile = dir.appendingPathComponent("save.dmsync.tmp.\(UUID().uuidString)")
-            try data.write(to: tempFile, options: .atomic)
-            _ = try? FileManager.default.removeItem(at: file)
-            try FileManager.default.moveItem(at: tempFile, to: file)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            var coordError: NSError?
+            var writeError: Error?
+            NSFileCoordinator(filePresenter: nil).coordinate(writingItemAt: file, options: .forReplacing, error: &coordError) { coordURL in
+                let part = coordURL.path + ".\(getpid()).nosync"
+                do {
+                    try? fm.removeItem(atPath: part)
+                    try data.write(to: URL(fileURLWithPath: part), options: .atomic)
+                    if rename(part, coordURL.path) != 0 {
+                        let err = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                        try? fm.removeItem(atPath: part)
+                        throw err
+                    }
+                } catch {
+                    writeError = error
+                }
+            }
+            if let err = coordError ?? writeError {
+                throw err
+            }
             sendResponse(connection, status: 200, message: "OK")
         } catch {
             sendResponse(connection, status: 500, message: "Write Error: \(error.localizedDescription)")

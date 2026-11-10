@@ -38,6 +38,9 @@ public struct LibraryView: View {
     public let globalPadMap: PadMap
     /// The controller's state while the button test is open, from the host.
     public let padSnapshot: PadSnapshot?
+    public let shellCloudSyncing: Bool
+    public let shellCloudStatus: String
+    public let bridgeDiscovering: Bool
     public var actions: ShellActions
     public var input: ShellInputLog
     /// The sequence of the last input event acted on.
@@ -85,12 +88,16 @@ public struct LibraryView: View {
                 input: ShellInputLog = ShellInputLog(), initialSelection: String? = nil, initialDetailOpen: Bool = false,
                 initialControllersOpen: Bool = false, initialShellSettingsOpen: Bool = false, initialFocusVisible: Bool = false,
                 globalPadMap: PadMap = PadMap(), padSnapshot: PadSnapshot? = nil,
-                initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false) {
+                initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false,
+                shellCloudSyncing: Bool = false, shellCloudStatus: String = "", bridgeDiscovering: Bool = false) {
         ShellPalette.configureNativeAppearance()
         self.games = games
         self.controllers = controllers
         self.globalPadMap = globalPadMap
         self.padSnapshot = padSnapshot
+        self.shellCloudSyncing = shellCloudSyncing
+        self.shellCloudStatus = shellCloudStatus
+        self.bridgeDiscovering = bridgeDiscovering
         _padMapping = State(initialValue: initialPadMapping.map { PadMappingState(gameID: $0) })
         _buttonTestOpen = State(initialValue: initialButtonTestOpen)
         self.actions = actions
@@ -346,7 +353,8 @@ public struct LibraryView: View {
                         .accessibilityHidden(choice != nil || padMapping != nil || buttonTestOpen)
                 }
                 if shellSettingsOpen {
-                    ShellSettingsView(actions: menuActions, onClose: closeShellSettings)
+                    ShellSettingsView(actions: menuActions, shellCloudSyncing: shellCloudSyncing, shellCloudStatus: shellCloudStatus,
+                                      bridgeDiscovering: bridgeDiscovering, onClose: closeShellSettings)
                         .background(ShellPalette.background)
                         .accessibilityHidden(choice != nil)
                 }
@@ -649,6 +657,10 @@ public struct LibraryView: View {
         a.onGlobalPadMapChange = { if !echo() { o.onGlobalPadMapChange($0, $1) } }
         a.onGlobalPadMapReset = { if !echo() { o.onGlobalPadMapReset() } }
         a.onDeleteGame = { if !echo() { o.onDeleteGame($0, $1) } }
+        a.onSyncCloudSaves = { if !echo() { o.onSyncCloudSaves($0) } }
+        a.onSyncAllCloudSaves = { if !echo() { o.onSyncAllCloudSaves() } }
+        a.onSaveBridgeChange = { if !echo() { o.onSaveBridgeChange($0, $1) } }
+        a.onDiscoverSaveBridge = { if !echo() { o.onDiscoverSaveBridge() } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when

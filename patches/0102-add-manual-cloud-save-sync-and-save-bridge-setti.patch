@@ -1,0 +1,926 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 17:04:32 -0300
+Subject: [PATCH] Add manual cloud save sync and Save Bridge settings to iOS
+ and tvOS launchers
+
+Upstream-Status: pending
+Reason: Manual cloud save sync, runtime LAN Save Bridge config, and unconditional local network ATS/Bonjour on iOS and tvOS
+Issue: lufefaundez/NX2Apple#2
+
+---
+ dm/host/save_sync.c           | 120 +++++++++++++++-
+ dm/host/save_sync.h           |   3 +
+ dm/host/tests/t_save_sync.c   |  32 +++++
+ dm/ios/Sources/CloudSaves.h   |  45 ++++--
+ dm/ios/Sources/CloudSaves.m   | 248 +++++++++++++++++++++++++++++-----
+ dm/ios/Sources/Launcher.swift | 218 ++++++++++++++++++++++++++++++
+ dm/ios/project-framework.yml  |   5 +
+ dm/ios/project-shell.yml      |   5 +
+ dm/ios/project.yml            |   5 +
+ 9 files changed, 628 insertions(+), 53 deletions(-)
+
+diff --git a/dm/host/save_sync.c b/dm/host/save_sync.c
+index 0802b07..93644de 100644
+--- a/dm/host/save_sync.c
++++ b/dm/host/save_sync.c
+@@ -62,6 +62,12 @@ static int mkdirs(const char *path) {   // mkdir -p
+     return mkdir(p, 0755) && errno != EEXIST ? -1 : 0;
+ }
+ 
++static int mkdirs_parent(const char *path) {
++    char d[PATH_MAX]; if (snprintf(d, sizeof d, "%s", path) >= (int)sizeof d) return -1;
++    char *s = strrchr(d, '/');
++    return s && s > d ? (*s = 0, mkdirs(d)) : 0;
++}
++
+ static int rm_tree(const char *p) {   // rm -rf: 0 when nothing is left
+     struct stat st; if (lstat(p, &st)) return errno == ENOENT ? 0 : -1;
+     if (!S_ISDIR(st.st_mode)) return unlink(p);
+@@ -400,19 +406,22 @@ static int pull(const char *save, const char *bundle, ss_meta *r, char *kept, si
+     char tmp[PATH_MAX]; snprintf(tmp, sizeof tmp, "%s.sync-tmp/in", save);
+     kept[0] = 0;
+     if (rm_tree(tmp) || mkdirs(tmp) || ss_read(bundle, tmp, r)) { rm_tree(tmp); return -1; }
++    int ok = -1;
+     for (int i = 0; i < 2; i++) {
+         char here[PATH_MAX], incoming[PATH_MAX], old[PATH_MAX];
+         folder_path(save, i, here, sizeof here); snprintf(incoming, sizeof incoming, "%s/%s", tmp, FOLDERS[i]);
+         int fresh = !access(incoming, F_OK), had = has_entries(here);
+-        if (had && !*kept && backup_dir(save, "local", kept, kn)) return -1;
++        if (had && !*kept && backup_dir(save, "local", kept, kn)) goto out;
+         snprintf(old, sizeof old, "%s/%s", kept, FOLDERS[i]);
+         if (fresh && !access(here, F_OK)) {   // swapped: here holds the cloud's, incoming this device's
+-            if (renamex_np(incoming, here, RENAME_SWAP) || (had ? rename(incoming, old) : rm_tree(incoming))) return -1;
+-        } else if (fresh) { if (rename(incoming, here)) return -1; }
+-        else if (had && rename(here, old)) return -1;   // a folder the cloud's save does not have: this device's goes, so both hold the same
++            if (renamex_np(incoming, here, RENAME_SWAP) || (had ? rename(incoming, old) : rm_tree(incoming))) goto out;
++        } else if (fresh) { if (mkdirs_parent(here) || rename(incoming, here)) goto out; }
++        else if (had && rename(here, old)) goto out;   // a folder the cloud's save does not have: this device's goes, so both hold the same
+     }
++    ok = 0;
++out:
+     rm_tree(tmp);
+-    return 0;
++    return ok;
+ }
+ 
+ // What this device committed goes to the cloud, unless the cloud already has it. A cloud save changed since this device's last sync (another device sent it) is kept first.
+@@ -493,7 +502,7 @@ static void mount_once(const char *save, const char *title) {
+     read_base(save, base);
+     int got = fetch_timed(cloud, theirs, FETCH_MS), both = 0, failed = 0;
+     if (got > 0 && ss_read(theirs, NULL, &other)) { SRED("the cloud's save %s is damaged: playing on with this device's, which replaces it", cloud); got = 0; }
+-    else if (got > 0 && strcasecmp(other.title, title)) { SRED("the cloud's save %s is %s's, not %s's: not used", cloud, other.title, title); got = -1; }
++    else if (got > 0 && *other.title && strcasecmp(other.title, title)) { SRED("the cloud's save %s is %s's, not %s's: not used", cloud, other.title, title); got = -1; }
+     if (got < 0) { SLOG("playing on with this device's save; it is sent after the game saves, unless the cloud's has changed meanwhile (then that one is kept)"); failed = 1; }
+     switch (got < 0 ? SS_KEEP : ss_decide(mine.hash, base, got ? other.hash : "", mine.saved, other.saved, &both)) {
+     case SS_PULL:
+@@ -550,6 +559,105 @@ int save_sync_after_exit(const char *save, const char *title) {   // save: DM_SA
+     return !cloud_file(title, cloud, sizeof cloud) || send_save(dd, title, cloud);
+ }
+ 
++static void set_sync_msg(char *msg, size_t cap, const char *s) {
++    if (msg && cap) snprintf(msg, cap, "%s", s ? s : "");
++}
++
++int save_sync_now(const char *save, const char *title, char *msg, size_t msg_cap) {
++    char cloud[PATH_MAX], dd[PATH_MAX], tmp[PATH_MAX], theirs[PATH_MAX], packed[PATH_MAX], base[SS_HASH + 1], kept[PATH_MAX], t[32];
++    ss_meta mine, other; memset(&other, 0, sizeof other);
++    packed[0] = 0;
++    if (!save || !*save || !title || !*title) { set_sync_msg(msg, msg_cap, "No save location configured"); return -1; }
++    snprintf(dd, sizeof dd, "%s", save); size_t L = strlen(dd); while (L > 1 && dd[L - 1] == '/') dd[--L] = 0;
++    if (!cloud_file(title, cloud, sizeof cloud)) { set_sync_msg(msg, msg_cap, "Cloud save sync is off"); return 0; }
++    if (ss_scan(dd, &mine)) { SRED("manual sync: this device's save %s cannot be read (errno=%d)", dd, errno); set_sync_msg(msg, msg_cap, "Cannot read local save"); return -1; }
++    read_base(dd, base);
++    snprintf(tmp, sizeof tmp, "%s.sync-tmp", dd); snprintf(theirs, sizeof theirs, "%s/in.dmsync", tmp);
++    if (rm_tree(tmp) || mkdirs(tmp)) { SRED("manual sync: cannot make %s (errno=%d)", tmp, errno); set_sync_msg(msg, msg_cap, "Cannot create temporary sync folder"); return -1; }
++    int got = fetch_timed(cloud, theirs, FETCH_MS), both = 0, rc = -1;
++    if (got < 0) {
++        SLOG("manual sync: could not reach %s", cloud);
++        set_sync_msg(msg, msg_cap, "Could not reach cloud save or save server");
++        goto done;
++    }
++    if (got > 0 && ss_read(theirs, NULL, &other)) {
++        SRED("manual sync: the cloud's save %s is unreadable", cloud);
++        set_sync_msg(msg, msg_cap, "Cloud save file is unreadable");
++        goto done;
++    }
++    if (got > 0 && *other.title && strcasecmp(other.title, title)) {
++        SRED("manual sync: the cloud's save %s is %s's, not %s's", cloud, other.title, title);
++        set_sync_msg(msg, msg_cap, "Cloud save belongs to a different game");
++        goto done;
++    }
++    switch (ss_decide(mine.hash, base, got ? other.hash : "", mine.saved, other.saved, &both)) {
++    case SS_KEEP:
++        if (got > 0 && mine.files) {
++            write_base(dd, mine.hash);
++            SLOG("manual sync: in step with %s", cloud);
++            set_sync_msg(msg, msg_cap, "Saves up to date");
++        } else {
++            SLOG("manual sync: no save here or in %s yet", cloud);
++            set_sync_msg(msg, msg_cap, "No save here or in the cloud yet");
++        }
++        rc = 0;
++        break;
++    case SS_PULL:
++        when(other.saved, t, sizeof t);
++        if (pull(dd, theirs, &other, kept, sizeof kept)) {
++            SRED("manual sync: bringing the cloud's save in failed (errno=%d)", errno);
++            set_sync_msg(msg, msg_cap, "Failed to restore cloud save");
++            goto done;
++        }
++        write_base(dd, other.hash);
++        SLOG("manual sync: brought in the cloud's save (from %s, saved %s%s)%s%s",
++             other.device, t, both ? ", the newer of two that both changed" : "", *kept ? "; this device's is kept in " : "", kept);
++        set_sync_msg(msg, msg_cap, "Save downloaded");
++        rc = 1;
++        break;
++    case SS_PUSH:
++        if (got > 0 && other.files && strcmp(other.hash, base)) {
++            if (backup_dir(dd, "cloud", kept, sizeof kept) || ss_read(theirs, kept, &other)) {
++                SRED("manual sync: cannot keep the cloud's save before replacing it (errno=%d)", errno);
++                set_sync_msg(msg, msg_cap, "Failed to back up cloud save");
++                goto done;
++            }
++            when(other.saved, t, sizeof t);
++            SLOG("manual sync: kept cloud save (from %s, saved %s) in %s", other.device, t, kept);
++        }
++        snprintf(packed, sizeof packed, "%s/out.dmsync", tmp);
++        if (ss_pack(dd, title, packed, &mine)) {
++            SRED("manual sync: packing %s failed (errno=%d)", dd, errno);
++            set_sync_msg(msg, msg_cap, "Failed to pack local save");
++            goto done;
++        }
++        if (!is_remote_url(cloud)) {
++            char dir[PATH_MAX]; snprintf(dir, sizeof dir, "%s", cloud); *strrchr(dir, '/') = 0;
++            if (mkdirs(dir)) {
++                SRED("manual sync: sending to %s failed (errno=%d)", cloud, errno);
++                set_sync_msg(msg, msg_cap, "Failed to upload save");
++                goto done;
++            }
++        }
++        if (front_save_sync_store(packed, cloud) != 1) {
++            SRED("manual sync: sending to %s failed (errno=%d)", cloud, errno);
++            set_sync_msg(msg, msg_cap, "Failed to upload save");
++            goto done;
++        }
++        write_base(dd, mine.hash);
++        when(mine.saved, t, sizeof t);
++        SLOG("manual sync: sent %d files, saved %s, to %s", mine.files, t, cloud);
++        set_sync_msg(msg, msg_cap, "Save uploaded");
++        rc = 2;
++        break;
++    }
++done:
++    if (packed[0]) unlink(packed);
++    if (got >= 0) rm_tree(tmp);
++    else rmdir(tmp);
++    return rc;
++}
++
+ // ---------- the platform's parts: these defaults are plain file copies, which the Mac's iCloud Drive takes (it downloads a file a read asks for) ----------
+ __attribute__((weak)) int dm_save_sync_remote_is_url(const char *cloud) { return is_remote_url(cloud); }
+ __attribute__((weak)) int dm_save_sync_remote_fetch(const char *cloud, const char *local) { (void)cloud; (void)local; return -1; }
+diff --git a/dm/host/save_sync.h b/dm/host/save_sync.h
+index f7e94b0..aef7020 100644
+--- a/dm/host/save_sync.h
++++ b/dm/host/save_sync.h
+@@ -8,6 +8,7 @@
+ // both changed (played on both without syncing in between, or the first sync of a device that has a save of its own): the newer one wins and the other is kept.
+ // Every save this replaces, here or in the cloud, is kept first in <DM_SAVE>-backups/<date> <side>; the newest 10 of each side stay.
+ #pragma once
++#include <stddef.h>
+ #include <stdint.h>
+ 
+ #define SS_HASH 32   // hex digits of a save's hash: the first 16 bytes of a SHA-256
+@@ -36,6 +37,8 @@ void save_sync_mount(const char *save, const char *title);   // the game's first
+ void save_sync_committed(void);           // a Commit went through (hle_fs.c, under its locks: it only wakes the sender)
+ int save_sync_flush(int timeout_ms);      // sends now what was committed and not sent (the iPhone app going to the background): 1 = in step with the cloud, 0 = not (yet)
+ int save_sync_after_exit(const char *save, const char *title);   // the Mac launcher once the host has exited (a crash included): 1 = in step, 0 = not
++// One-shot manual sync from an iOS/tvOS launcher before the game starts: returns -1 on error, 0 when off / empty / up to date, 1 when pulled, 2 when pushed.
++int save_sync_now(const char *save, const char *title, char *msg, size_t msg_cap);
+ 
+ // ---- what the platform provides (weak defaults in save_sync.c: plain file copies, which the Mac's iCloud Drive takes) ----
+ // Copies the cloud's file to a local one; the iPhone app goes through NSFileCoordinator, which downloads a file iCloud has only listed (SaveSync.m).
+diff --git a/dm/host/tests/t_save_sync.c b/dm/host/tests/t_save_sync.c
+index 1da362e..8f9024b 100644
+--- a/dm/host/tests/t_save_sync.c
++++ b/dm/host/tests/t_save_sync.c
+@@ -293,6 +293,38 @@ int main(int argc, char **argv) {
+     snprintf(p, sizeof p, "%s/game.dat", tvB);
+     CHECK(session(tvB, deadurl, NULL, NULL) == 0 && same(p, "tv2"), "unreachable primary URL falls back to DM_SAVE_SYNC_FALLBACK and pulls save");
+     unsetenv("DM_SAVE_SYNC_TOKEN"); unsetenv("DM_SAVE_SYNC_FALLBACK");
++
++    printf("(12) manual one-shot save_sync_now\n");
++    char M1[1200], M2[1200], MF[1200], mcloud[1200], mcf[1400], msg[256];
++    snprintf(M1, sizeof M1, "%s/manual1/save", root);
++    snprintf(M2, sizeof M2, "%s/manual2/save", root);
++    snprintf(MF, sizeof MF, "%s/manual_fresh/games/%s/save", root, id);
++    snprintf(mcloud, sizeof mcloud, "%s/manual_cloud", root);
++    mkd(M1); mkd(M2); mkd(mcloud);
++    snprintf(mcf, sizeof mcf, "%s/%s/save.dmsync", mcloud, id);
++    unsetenv("DM_SAVE_SYNC");
++    CHECK(save_sync_now(M1, DM_GAME_ID, msg, sizeof msg) == 0 && strstr(msg, "off"), "manual sync reports when sync is off (%s)", msg);
++    setenv("DM_SAVE_SYNC", mcloud, 1);
++    CHECK(save_sync_now(M1, DM_GAME_ID, msg, sizeof msg) == 0 && strstr(msg, "No save"), "manual sync reports when neither side has a save (%s)", msg);
++    snprintf(p, sizeof p, "%s/slot0.dat", M1); put(p, "hero-1"); set_mtime(p, time(NULL) - 60);
++    CHECK(save_sync_now(M1, DM_GAME_ID, msg, sizeof msg) == 2 && cloud_has(mcf, root, "slot0.dat", "hero-1"), "manual sync uploads local save (%s)", msg);
++    snprintf(p, sizeof p, "%s.sync-tmp", M1); CHECK(!exists(p), "manual push leaves no temporary folder");
++    CHECK(save_sync_now(M1, DM_GAME_ID, msg, sizeof msg) == 0 && strstr(msg, "up to date"), "manual sync reports when saves match (%s)", msg);
++    snprintf(p, sizeof p, "%s/slot0.dat", MF);
++    CHECK(save_sync_now(MF, DM_GAME_ID, msg, sizeof msg) == 1 && same(p, "hero-1"), "manual sync pulls into a fresh save path (%s)", msg);
++    snprintf(p, sizeof p, "%s/slot0.dat", M2); put(p, "hero-old"); set_mtime(p, time(NULL) - 120);
++    CHECK(save_sync_now(M2, DM_GAME_ID, msg, sizeof msg) == 1 && same(p, "hero-1"), "manual sync downloads newer cloud save over older local (%s)", msg);
++    backup_of(M2, "local", back, sizeof back); snprintf(q, sizeof q, "%s/save/slot0.dat", back);
++    CHECK(*back && same(q, "hero-old"), "replaced older local save is backed up (%s)", back);
++    unlink(bfile);
++    setenv("DM_SAVE_SYNC_TOKEN", "secret-bridge-tok", 1);
++    setenv("DM_SAVE_SYNC", burl, 1);
++    snprintf(p, sizeof p, "%s/slot0.dat", M1); put(p, "hero-http"); set_mtime(p, time(NULL));
++    CHECK(save_sync_now(M1, DM_GAME_ID, msg, sizeof msg) == 2 && cloud_has(bfile, root, "slot0.dat", "hero-http"), "manual sync pushes over HTTP bridge (%s)", msg);
++    setenv("DM_SAVE_SYNC", deadurl, 1);
++    CHECK(save_sync_now(M1, DM_GAME_ID, msg, sizeof msg) == -1 && strstr(msg, "reach"), "manual sync reports unreachable HTTP bridge (%s)", msg);
++    unsetenv("DM_SAVE_SYNC"); unsetenv("DM_SAVE_SYNC_TOKEN");
++
+     kill(srv, SIGTERM); close(lfd); waitpid(srv, NULL, 0);
+ 
+     printf("== save sync: %d checks, %d failed ==\n", checks, fails);
+diff --git a/dm/ios/Sources/CloudSaves.h b/dm/ios/Sources/CloudSaves.h
+index 1c1d08d..f888026 100644
+--- a/dm/ios/Sources/CloudSaves.h
++++ b/dm/ios/Sources/CloudSaves.h
+@@ -1,26 +1,43 @@
+-// Cloud saves on the iPhone (dm/host/save_sync.h): the iCloud Drive folder the player picked in the
+-// launcher's Cloud saves section (Launcher.swift), remembered across launches. The Mac app chooses the
+-// same folder in its settings window. The host brings the save in from there when the game starts and
+-// sends it there after each save.
+-//
+-// iOS does not let an app remember a path outside its sandbox. It lets it keep a bookmark: the document
+-// picker grants access to the folder, and the bookmark resolves to it again after a relaunch. The
+-// bookmark is bound to the app's signing identity, so a re-signed build cannot resolve it, and the
+-// launcher asks the player to pick the folder again.
++// Cloud saves and LAN Save Bridge configuration for standalone iOS and tvOS apps
++// (dm/host/save_sync.h). Keeps the picked iCloud Drive folder bookmark on iOS as well as
++// user-entered or build-time LAN Save Bridge settings, and runs manual one-shot syncs.
+ 
+ #import <Foundation/Foundation.h>
+ 
++NS_ASSUME_NONNULL_BEGIN
++
+ /// The picked folder, or nil when there is none or it no longer resolves. `stale` (optional) is set
+ /// when a bookmark exists but cannot be used under this signature.
+-NSString *dm_cloud_saves_path(BOOL *stale);
++NSString * _Nullable dm_cloud_saves_path(BOOL * _Nullable stale);
+ 
+ /// Store a bookmark for the folder the player just picked. Returns NO when the system refuses to make one.
+ BOOL dm_store_cloud_saves(NSURL *url);
+ 
+-/// Forget it: cloud saves off.
++/// Forget the picked cloud folder bookmark.
+ void dm_clear_cloud_saves(void);
+ 
+-/// Puts the picked folder into DM_SAVE_SYNC before the game starts (front_ios.m, at Play), its
+-/// security scope held for the session. A DM_SAVE_SYNC from an env file or the launch environment
+-/// wins. Turning cloud saves off in the launcher clears the one this set.
++/// Normalizes a LAN Save Bridge address (e.g. "192.168.1.10" -> "http://192.168.1.10:47921/saves"),
++/// preserving valid http(s):// and cloudkit:// targets, or returning nil when invalid.
++NSString * _Nullable dm_normalize_save_bridge_url(NSString * _Nullable raw);
++
++/// Runtime-saved LAN Save Bridge URL in NSUserDefaults, or nil if unset.
++NSString * _Nullable dm_save_bridge_url(void);
++
++/// Runtime-saved LAN Save Bridge Bearer token in NSUserDefaults, or nil if unset.
++NSString * _Nullable dm_save_bridge_token(void);
++
++/// Built-in target from Info.plist (DMCloudKitContainer / DMSaveBridgeURL), or nil if none.
++NSString * _Nullable dm_builtin_save_target(void);
++
++/// Stores or clears the runtime Save Bridge URL and Bearer token, then refreshes the environment.
++void dm_set_save_bridge(NSString * _Nullable url, NSString * _Nullable token);
++
++/// Updates DM_SAVE_SYNC / DM_SAVE_SYNC_TOKEN / DM_SAVE_SYNC_FALLBACK before the game starts or syncs.
++/// Values fixed by an env file or launch environment win.
+ void dm_cloud_saves_env(void);
++
++/// Runs a blocking manual one-shot sync for the current standalone game profile (`save_sync_now`).
++/// Returns 0 (up to date / off / empty), 1 (pulled), 2 (pushed), or -1 (failed).
++int dm_sync_cloud_saves_now(NSString * _Nullable * _Nullable message);
++
++NS_ASSUME_NONNULL_END
+diff --git a/dm/ios/Sources/CloudSaves.m b/dm/ios/Sources/CloudSaves.m
+index fbd4479..203a517 100644
+--- a/dm/ios/Sources/CloudSaves.m
++++ b/dm/ios/Sources/CloudSaves.m
+@@ -1,35 +1,31 @@
+ // See CloudSaves.h.
+ 
+ #import "CloudSaves.h"
++#include <pthread.h>
++#include "hle_profile.h"
++#include "save_sync.h"
+ 
+-#if TARGET_OS_TV
+-NSString *dm_cloud_saves_path(BOOL *stale) { if (stale) *stale = NO; return nil; }
+-BOOL dm_store_cloud_saves(NSURL *url) { (void)url; return NO; }
+-void dm_clear_cloud_saves(void) {}
+-void dm_cloud_saves_env(void) {
+-    if (getenv("DM_SAVE_SYNC")) return;
+-    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+-    NSString *ck = info[@"DMCloudKitContainer"], *bridge = info[@"DMSaveBridgeURL"], *fb = info[@"DMSaveBridgeFallbackURL"], *tok = info[@"DMSaveBridgeToken"];
+-    if (tok.length && !getenv("DM_SAVE_SYNC_TOKEN")) setenv("DM_SAVE_SYNC_TOKEN", tok.UTF8String, 1);
+-    if (ck.length) {
+-        setenv("DM_SAVE_SYNC", [NSString stringWithFormat:@"cloudkit://%@", ck].UTF8String, 1);
+-        if (bridge.length && !getenv("DM_SAVE_SYNC_FALLBACK")) setenv("DM_SAVE_SYNC_FALLBACK", bridge.UTF8String, 1);
+-    } else if (bridge.length) {
+-        setenv("DM_SAVE_SYNC", bridge.UTF8String, 1);
+-        if (fb.length && !getenv("DM_SAVE_SYNC_FALLBACK")) setenv("DM_SAVE_SYNC_FALLBACK", fb.UTF8String, 1);
+-    }
+-}
+-#else
+ static NSString *const kCloudSaves = @"cloudSavesBookmark";
++static NSString *const kSaveBridgeURL = @"saveBridgeURL";
++static NSString *const kSaveBridgeToken = @"saveBridgeToken";
+ 
++static pthread_mutex_t g_env_mu = PTHREAD_MUTEX_INITIALIZER;
++static pthread_mutex_t g_sync_mu = PTHREAD_MUTEX_INITIALIZER;
++static BOOL g_setSync = NO;
++static BOOL g_setFallback = NO;
++static BOOL g_setToken = NO;
++
++static NSString *trim_string(NSString *s) {
++    NSString *t = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
++    return t.length ? t : nil;
++}
++
++#if !TARGET_OS_TV
+ // The folder's security scope, held from the first resolve on: the host writes there after every
+ // save. Never stopped on purpose, the process exits when the game does.
+ static NSURL *opened = nil;
+ 
+ static NSData *fresh_bookmark(NSURL *url) {
+-    // The picker grants a security scope that lasts while it is held: the bookmark is written with
+-    // the scope on. One written without it reads back on this run and resolves to nothing from the
+-    // next launch on.
+     BOOL scoped = [url startAccessingSecurityScopedResource];
+     NSData *bookmark = [url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:nil];
+     if (scoped) [url stopAccessingSecurityScopedResource];
+@@ -44,17 +40,14 @@ NSString *dm_cloud_saves_path(BOOL *stale) {
+     NSError *error = nil;
+     NSURL *url = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil bookmarkDataIsStale:&isStale error:&error];
+     if (!url) {
+-        // A re-signed build gets a bookmark the system will not resolve for it. Keep the data, the
+-        // player may install the same signature again, and let the launcher ask for a new pick.
+         fprintf(stderr, "boot: the picked cloud-save folder bookmark does not resolve (%s)\n", error.localizedDescription.UTF8String ?: "no reason given");
+         if (stale) *stale = YES;
+         return nil;
+     }
+     if (opened && ![opened.path isEqualToString:url.path]) opened = nil;
+-    if (!opened) [url startAccessingSecurityScopedResource];   // held for the session (see opened)
++    if (!opened) [url startAccessingSecurityScopedResource];
+     opened = url;
+     if (isStale) {
+-        // The system still resolves it but asks for a rewrite. Same signature, so a fresh bookmark sticks.
+         NSData *again = fresh_bookmark(url);
+         if (again) [NSUserDefaults.standardUserDefaults setObject:again forKey:kCloudSaves];
+         if (stale) *stale = YES;
+@@ -68,29 +61,218 @@ BOOL dm_store_cloud_saves(NSURL *url) {
+     NSURL *back = nil;
+     if (bookmark) back = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil bookmarkDataIsStale:nil error:&error];
+     if (!bookmark || !back) {
+-        // A bookmark that cannot come back is not saved as if it were good.
+         fprintf(stderr, "[RED] could not bookmark %s: %s\n", url.path.UTF8String ?: "?",
+                 error.localizedDescription.UTF8String ?: (bookmark ? "the bookmark does not resolve again" : "no bookmark data"));
+         return NO;
+     }
+     [NSUserDefaults.standardUserDefaults setObject:bookmark forKey:kCloudSaves];
+     fprintf(stderr, "launcher: cloud-save folder set to %s\n", url.path.UTF8String ?: "?");
++    dm_cloud_saves_env();
+     return YES;
+ }
+ 
+ void dm_clear_cloud_saves(void) {
+     [NSUserDefaults.standardUserDefaults removeObjectForKey:kCloudSaves];
++    dm_cloud_saves_env();
++}
++#else
++NSString *dm_cloud_saves_path(BOOL *stale) {
++    if (stale) *stale = NO;
++    return nil;
+ }
+ 
+-void dm_cloud_saves_env(void) {
+-    static BOOL fromPick;   // DM_SAVE_SYNC is the one this set, not an env file's
+-    if (getenv("DM_SAVE_SYNC") && !fromPick) return;
++BOOL dm_store_cloud_saves(NSURL *url) {
++    (void)url;
++    return NO;
++}
++
++void dm_clear_cloud_saves(void) {}
++#endif
++
++NSString *dm_normalize_save_bridge_url(NSString *raw) {
++    NSString *trimmed = trim_string(raw);
++    if (!trimmed.length) return nil;
++    if ([trimmed hasPrefix:@"cloudkit://"]) {
++        while (trimmed.length > 11 && [trimmed hasSuffix:@"/"]) {
++            trimmed = [trimmed substringToIndex:trimmed.length - 1];
++        }
++        return [trimmed isEqualToString:@"cloudkit://"] ? nil : trimmed;
++    }
++    NSString *withScheme = [trimmed containsString:@"://"] ? trimmed : [@"http://" stringByAppendingString:trimmed];
++    NSURLComponents *comps = [NSURLComponents componentsWithString:withScheme];
++    NSString *scheme = comps.scheme.lowercaseString;
++    if (!comps || (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) || !comps.host.length) {
++        return nil;
++    }
++    comps.scheme = scheme;
++    if (!comps.path.length || [comps.path isEqualToString:@"/"]) {
++        if ([scheme isEqualToString:@"http"] && !comps.port) comps.port = @47921;
++        comps.path = @"/saves";
++    } else {
++        NSString *p = comps.path;
++        while (p.length > 1 && [p hasSuffix:@"/"]) p = [p substringToIndex:p.length - 1];
++        comps.path = p;
++    }
++    return comps.string;
++}
++
++NSString *dm_save_bridge_url(void) {
++    return dm_normalize_save_bridge_url([NSUserDefaults.standardUserDefaults stringForKey:kSaveBridgeURL]);
++}
++
++NSString *dm_save_bridge_token(void) {
++    return trim_string([NSUserDefaults.standardUserDefaults stringForKey:kSaveBridgeToken]);
++}
++
++NSString *dm_builtin_save_target(void) {
++    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
++    NSString *ck = trim_string(info[@"DMCloudKitContainer"]);
++    if (ck.length) return [NSString stringWithFormat:@"cloudkit://%@", ck];
++    return dm_normalize_save_bridge_url(info[@"DMSaveBridgeURL"]);
++}
++
++static void cloud_saves_env_locked(void) {
++    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
++    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
++
++    BOOL tokenFixed = getenv("DM_SAVE_SYNC_TOKEN") && !g_setToken;
++    if (!tokenFixed) {
++        NSString *udTok = trim_string([defaults stringForKey:kSaveBridgeToken]);
++        NSString *plistTok = trim_string(info[@"DMSaveBridgeToken"]);
++        NSString *tok = udTok ?: plistTok;
++        if (tok.length) {
++            setenv("DM_SAVE_SYNC_TOKEN", tok.UTF8String, 1);
++            g_setToken = YES;
++        } else if (g_setToken) {
++            unsetenv("DM_SAVE_SYNC_TOKEN");
++            g_setToken = NO;
++        }
++    }
++
++    BOOL syncFixed = getenv("DM_SAVE_SYNC") && !g_setSync;
++    if (syncFixed) return;
++
+     BOOL stale = NO;
+     NSString *folder = dm_cloud_saves_path(&stale);
+-    if (stale && !folder) fprintf(stderr, "boot: the cloud-save folder needs to be chosen again (the app is signed differently now); cloud saves are off\n");
++    if (stale && !folder) {
++        fprintf(stderr, "boot: the cloud-save folder needs to be chosen again (the app is signed differently now); cloud saves are off\n");
++    }
++
++    NSString *udBridge = dm_save_bridge_url();
++    NSString *ck = trim_string(info[@"DMCloudKitContainer"]);
++    NSString *plistBridge = dm_normalize_save_bridge_url(info[@"DMSaveBridgeURL"]);
++    NSString *plistFB = dm_normalize_save_bridge_url(info[@"DMSaveBridgeFallbackURL"]);
++
++    NSString *chosenTarget = nil;
++    NSString *chosenFallback = nil;
++    BOOL fromFolder = NO;
++
+     if (folder.length) {
+-        setenv("DM_SAVE_SYNC", folder.fileSystemRepresentation, 1); fromPick = YES;
+-        fprintf(stderr, "boot: cloud saves through %s\n", folder.fileSystemRepresentation);
+-    } else if (fromPick) { unsetenv("DM_SAVE_SYNC"); fromPick = NO; }
++        chosenTarget = folder;
++        fromFolder = YES;
++    } else if (udBridge.length) {
++        chosenTarget = udBridge;
++        if ([udBridge hasPrefix:@"cloudkit://"] && plistBridge.length) {
++            chosenFallback = plistBridge;
++        }
++    } else if (ck.length) {
++        chosenTarget = [NSString stringWithFormat:@"cloudkit://%@", ck];
++        if (plistBridge.length) chosenFallback = plistBridge;
++    } else if (plistBridge.length) {
++        chosenTarget = plistBridge;
++        if (plistFB.length && ![plistFB isEqualToString:plistBridge]) chosenFallback = plistFB;
++    }
++
++    if (chosenTarget.length) {
++        const char *cstr = fromFolder ? chosenTarget.fileSystemRepresentation : chosenTarget.UTF8String;
++        setenv("DM_SAVE_SYNC", cstr, 1);
++        g_setSync = YES;
++        if (chosenFallback.length && (!getenv("DM_SAVE_SYNC_FALLBACK") || g_setFallback)) {
++            setenv("DM_SAVE_SYNC_FALLBACK", chosenFallback.UTF8String, 1);
++            g_setFallback = YES;
++        } else if (g_setFallback) {
++            unsetenv("DM_SAVE_SYNC_FALLBACK");
++            g_setFallback = NO;
++        }
++        fprintf(stderr, "boot: cloud saves through %s\n", cstr);
++    } else {
++        if (g_setSync) {
++            unsetenv("DM_SAVE_SYNC");
++            g_setSync = NO;
++        }
++        if (g_setFallback) {
++            unsetenv("DM_SAVE_SYNC_FALLBACK");
++            g_setFallback = NO;
++        }
++    }
++}
++
++void dm_set_save_bridge(NSString *url, NSString *token) {
++    pthread_mutex_lock(&g_env_mu);
++    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
++    NSString *rawTrimmed = trim_string(url);
++    NSString *norm = dm_normalize_save_bridge_url(rawTrimmed);
++    if (norm.length) {
++        [defaults setObject:norm forKey:kSaveBridgeURL];
++    } else if (!rawTrimmed.length) {
++        [defaults removeObjectForKey:kSaveBridgeURL];
++    }
++    NSString *tok = trim_string(token);
++    if (tok.length) {
++        [defaults setObject:tok forKey:kSaveBridgeToken];
++    } else {
++        [defaults removeObjectForKey:kSaveBridgeToken];
++    }
++    cloud_saves_env_locked();
++    pthread_mutex_unlock(&g_env_mu);
++}
++
++void dm_cloud_saves_env(void) {
++    pthread_mutex_lock(&g_env_mu);
++    cloud_saves_env_locked();
++    pthread_mutex_unlock(&g_env_mu);
+ }
++
++static NSString *standalone_app_data_dir(void) {
++#if TARGET_OS_TV
++    return NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES)[0];
++#else
++    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+ #endif
++}
++
++static NSString *standalone_save_dir(const char *titleID) {
++    const char *envSave = getenv("DM_SAVE");
++    if (envSave && *envSave) return @(envSave);
++    NSString *doc = standalone_app_data_dir();
++    NSString *gdir = [[doc stringByAppendingPathComponent:@"games"] stringByAppendingPathComponent:@(titleID)];
++    NSFileManager *fm = NSFileManager.defaultManager;
++    for (NSString *sub in @[@"save", @"romfs.img", @"romfs"]) {
++        if ([fm fileExistsAtPath:[gdir stringByAppendingPathComponent:sub]]) {
++            return [gdir stringByAppendingPathComponent:@"save"];
++        }
++    }
++    return [doc stringByAppendingPathComponent:@"save"];
++}
++
++int dm_sync_cloud_saves_now(NSString * _Nullable * _Nullable message) {
++    pthread_mutex_lock(&g_sync_mu);
++    pthread_mutex_lock(&g_env_mu);
++    cloud_saves_env_locked();
++    const struct dm_profile *prof = dm_profile();
++    const char *tid = (prof && prof->id[0]) ? prof->id : "";
++    NSString *saveDir = *tid ? standalone_save_dir(tid) : nil;
++    pthread_mutex_unlock(&g_env_mu);
++
++    if (!*tid || !saveDir.length) {
++        if (message) *message = @"No game profile available";
++        pthread_mutex_unlock(&g_sync_mu);
++        return -1;
++    }
++
++    char buf[256] = "";
++    int rc = save_sync_now(saveDir.fileSystemRepresentation, tid, buf, sizeof buf);
++    if (message) *message = buf[0] ? @(buf) : @"";
++    pthread_mutex_unlock(&g_sync_mu);
++    return rc;
++}
+diff --git a/dm/ios/Sources/Launcher.swift b/dm/ios/Sources/Launcher.swift
+index 4197595..ac5f1b6 100644
+--- a/dm/ios/Sources/Launcher.swift
++++ b/dm/ios/Sources/Launcher.swift
+@@ -2,6 +2,7 @@
+ // from dm/games/settings.tsv (dm/games/settings.py): each sets an environment variable the host reads when the game starts. A variable an env file set (Documents/env.txt, the bundle's
+ // dm/env.txt; main.m lists them in DM_ENV_FILE_KEYS) is shown but kept. All settings share one screen, grouped by section (rows: LauncherRow.swift). Choices that differ from the game's default are kept
+ // in UserDefaults; Reset to tested defaults shows the defaults, and Play then forgets them. DM_LAUNCHER=0 in Documents/env.txt starts the game at once with the saved choices; DM_SAVED_CHOICES=0 ignores them (and keeps them)
++import Network
+ import SwiftUI
+ import UIKit
+ import UniformTypeIdentifiers
+@@ -77,6 +78,7 @@ private struct CloudSavesSection: View {
+     @State private var folder: String = ""
+     @State private var note: String = ""
+     @State private var picking = false
++    @State private var syncing = false
+ 
+     var body: some View {
+         Section {
+@@ -100,9 +102,12 @@ private struct CloudSavesSection: View {
+                     } onCancel: { picking = false }
+                 }
+             if !folder.isEmpty {
++                Button(syncing ? "Syncing…" : "Sync now") { syncNow() }
++                    .disabled(syncing)
+                 Button("Turn off cloud saves", role: .destructive) {
+                     dm_clear_cloud_saves(); refresh(); note = ""
+                 }
++                .disabled(syncing)
+             }
+         } footer: {
+             Text(note.isEmpty
+@@ -119,6 +124,19 @@ private struct CloudSavesSection: View {
+             note = "The folder you chose before is no longer readable (the app was signed differently). Please choose it again."
+         }
+     }
++
++    private func syncNow() {
++        syncing = true
++        DispatchQueue.global(qos: .userInitiated).async {
++            var msg: NSString?
++            _ = dm_sync_cloud_saves_now(&msg)
++            let result = (msg as String?) ?? ""
++            DispatchQueue.main.async {
++                syncing = false
++                if !result.isEmpty { note = result }
++            }
++        }
++    }
+ }
+ 
+ /// UIDocumentPickerViewController for files or folders (`types`), in the two callbacks a SwiftUI sheet wants.
+@@ -153,6 +171,205 @@ private struct DocumentPicker: UIViewControllerRepresentable {
+ }
+ #endif
+ 
++private final class LauncherBridgeDiscovery {
++    private let lock = NSLock()
++    private var finished = false
++    private var browser: NWBrowser?
++    private var connections: [NWConnection] = []
++    private var timeout: DispatchWorkItem?
++    private var completion: ((String?) -> Void)?
++
++    static func scan(timeoutSeconds: TimeInterval = 3.0, completion: @escaping (String?) -> Void) {
++        let holder = LauncherBridgeDiscovery()
++        holder.completion = completion
++        holder.start(timeoutSeconds: timeoutSeconds)
++    }
++
++    private func start(timeoutSeconds: TimeInterval) {
++        let queue = DispatchQueue(label: "org.nxnative.save-bridge-discovery", qos: .userInitiated)
++        let browser = NWBrowser(for: .bonjour(type: "_nx2apple-saves._tcp", domain: "local."), using: .tcp)
++        let timer = DispatchWorkItem { [self] in finish(with: nil) }
++        lock.lock()
++        self.browser = browser
++        self.timeout = timer
++        lock.unlock()
++        queue.asyncAfter(deadline: .now() + timeoutSeconds, execute: timer)
++
++        browser.browseResultsChangedHandler = { [self] results, _ in
++            for result in results { resolve(result.endpoint, queue: queue) }
++        }
++        browser.stateUpdateHandler = { [self] state in
++            if case .failed = state { finish(with: nil) }
++        }
++        browser.start(queue: queue)
++    }
++
++    private func resolve(_ endpoint: NWEndpoint, queue: DispatchQueue) {
++        let params = NWParameters.tcp
++        if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options { ip.version = .v4 }
++        let conn = NWConnection(to: endpoint, using: params)
++        lock.lock()
++        guard !finished else { lock.unlock(); conn.cancel(); return }
++        connections.append(conn)
++        lock.unlock()
++        conn.stateUpdateHandler = { [self] state in
++            switch state {
++            case .ready:
++                if let url = extractURL(conn.currentPath?.remoteEndpoint) { finish(with: url) }
++                conn.cancel()
++            case .failed, .cancelled:
++                conn.cancel()
++            default: break
++            }
++        }
++        conn.start(queue: queue)
++    }
++
++    private func extractURL(_ endpoint: NWEndpoint?) -> String? {
++        guard case .hostPort(let host, let port) = endpoint, port.rawValue > 0 else { return nil }
++        switch host {
++        case .ipv4(let addr):
++            let b = addr.rawValue
++            guard b.count == 4 else { return nil }
++            return "http://\(b[0]).\(b[1]).\(b[2]).\(b[3]):\(port.rawValue)/saves"
++        case .name(let name, _) where !name.isEmpty:
++            return "http://\(name):\(port.rawValue)/saves"
++        default: return nil
++        }
++    }
++
++    private func finish(with url: String?) {
++        lock.lock()
++        guard !finished else { lock.unlock(); return }
++        finished = true
++        let done = completion; completion = nil
++        let b = browser; browser = nil
++        let conns = connections; connections.removeAll()
++        let timer = timeout; timeout = nil
++        lock.unlock()
++        timer?.cancel()
++        b?.cancel()
++        for c in conns { c.cancel() }
++        DispatchQueue.main.async { done?(url) }
++    }
++}
++
++private struct SaveBridgeSection: View {
++    @State private var address: String = ""
++    @State private var token: String = ""
++    @State private var savedURL: String = ""
++    @State private var builtinTarget: String = ""
++    @State private var note: String = ""
++    @State private var discovering = false
++    @State private var syncing = false
++
++    private var statusText: String {
++        if !savedURL.isEmpty { return savedURL }
++        if !builtinTarget.isEmpty { return "Built-in" }
++        return "Off"
++    }
++
++    var body: some View {
++        Section {
++            HStack {
++                Text("Save server")
++                Spacer()
++                Text(statusText).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
++            }
++            TextField("192.168.1.10:47921", text: $address)
++                .textInputAutocapitalization(.never)
++                .autocorrectionDisabled()
++                .keyboardType(.URL)
++                .onSubmit { _ = applyBridge(showSavedNote: true) }
++            SecureField("Access key", text: $token)
++                .textInputAutocapitalization(.never)
++                .autocorrectionDisabled()
++                .onSubmit { _ = applyBridge(showSavedNote: true) }
++            Button(discovering ? "Searching…" : "Find Mac on Wi-Fi") { scanWiFi() }
++                .disabled(discovering || syncing)
++            Button(syncing ? "Syncing…" : "Sync now") { syncNow() }
++                .disabled(syncing)
++            if !savedURL.isEmpty || !(dm_save_bridge_token() ?? "").isEmpty {
++                Button("Clear save server", role: .destructive) { clearBridge() }
++                    .disabled(syncing)
++            }
++        } footer: {
++            Text(note.isEmpty
++                 ? "Connect to your Mac over Wi-Fi to sync saves when iCloud Drive is unavailable."
++                 : note)
++        }
++        .onAppear(perform: refresh)
++    }
++
++    private func refresh() {
++        savedURL = dm_save_bridge_url() ?? ""
++        builtinTarget = dm_builtin_save_target() ?? ""
++        if address.isEmpty { address = savedURL }
++        if token.isEmpty { token = dm_save_bridge_token() ?? "" }
++    }
++
++    @discardableResult
++    private func applyBridge(showSavedNote: Bool) -> Bool {
++        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
++        if !trimmed.isEmpty {
++            guard let norm = dm_normalize_save_bridge_url(trimmed) else {
++                note = "Enter a valid server address, such as 192.168.1.10:47921."
++                return false
++            }
++            dm_set_save_bridge(norm, token)
++            address = norm
++            savedURL = dm_save_bridge_url() ?? norm
++            if showSavedNote { note = "Saved." }
++            return true
++        }
++        let trimmedTok = token.trimmingCharacters(in: .whitespacesAndNewlines)
++        if !savedURL.isEmpty || !trimmedTok.isEmpty {
++            dm_set_save_bridge(nil, trimmedTok.isEmpty ? nil : trimmedTok)
++            savedURL = dm_save_bridge_url() ?? ""
++            if showSavedNote { note = savedURL.isEmpty && trimmedTok.isEmpty ? "" : "Saved." }
++        }
++        return true
++    }
++
++    private func scanWiFi() {
++        discovering = true
++        note = ""
++        LauncherBridgeDiscovery.scan { found in
++            discovering = false
++            guard let found else {
++                note = "No Mac found on Wi-Fi"
++                return
++            }
++            address = found
++            dm_set_save_bridge(found, token)
++            savedURL = dm_save_bridge_url() ?? found
++            note = "Found Mac on Wi-Fi"
++        }
++    }
++
++    private func clearBridge() {
++        address = ""
++        token = ""
++        dm_set_save_bridge(nil, nil)
++        savedURL = ""
++        note = ""
++    }
++
++    private func syncNow() {
++        guard applyBridge(showSavedNote: false) else { return }
++        syncing = true
++        DispatchQueue.global(qos: .userInitiated).async {
++            var msg: NSString?
++            _ = dm_sync_cloud_saves_now(&msg)
++            let result = (msg as String?) ?? ""
++            DispatchQueue.main.async {
++                syncing = false
++                if !result.isEmpty { note = result }
++            }
++        }
++    }
++}
++
+ private struct LauncherView: View {
+     @ObservedObject var m: LauncherModel
+     let play: () -> Void
+@@ -194,6 +411,7 @@ private struct LauncherView: View {
+                     GameDataSection()
+                     CloudSavesSection()
+                     #endif
++                    SaveBridgeSection()
+                     Section {
+                         HStack {
+                             Text("Memory available")
+diff --git a/dm/ios/project-framework.yml b/dm/ios/project-framework.yml
+index 89a2df5..5e29658 100644
+--- a/dm/ios/project-framework.yml
++++ b/dm/ios/project-framework.yml
+@@ -57,6 +57,11 @@ targets:
+         GCSupportedGameControllers:
+           - ProfileName: ExtendedGamepad
+         CADisableMinimumFrameDurationOnPhone: true
++        NSAppTransportSecurity:
++          NSAllowsLocalNetworking: true
++        NSBonjourServices:
++          - _nx2apple-saves._tcp
++        NSLocalNetworkUsageDescription: NX2Apple uses the local network to find and sync game saves with your Mac.
+         UIApplicationSceneManifest:
+           UIApplicationSupportsMultipleScenes: false
+           UISceneConfigurations:
+diff --git a/dm/ios/project-shell.yml b/dm/ios/project-shell.yml
+index 3c896aa..253b600 100644
+--- a/dm/ios/project-shell.yml
++++ b/dm/ios/project-shell.yml
+@@ -63,6 +63,11 @@ targets:
+         GCSupportedGameControllers:
+           - ProfileName: ExtendedGamepad
+         CADisableMinimumFrameDurationOnPhone: true
++        NSAppTransportSecurity:
++          NSAllowsLocalNetworking: true
++        NSBonjourServices:
++          - _nx2apple-saves._tcp
++        NSLocalNetworkUsageDescription: NX2Apple uses the local network to find and sync game saves with your Mac.
+         UIApplicationSceneManifest:
+           UIApplicationSupportsMultipleScenes: false
+           UISceneConfigurations:
+diff --git a/dm/ios/project.yml b/dm/ios/project.yml
+index 8964dbb..1e62f42 100644
+--- a/dm/ios/project.yml
++++ b/dm/ios/project.yml
+@@ -54,6 +54,11 @@ targets:
+         GCSupportedGameControllers:
+           - ProfileName: ExtendedGamepad
+         CADisableMinimumFrameDurationOnPhone: true
++        NSAppTransportSecurity:
++          NSAllowsLocalNetworking: true
++        NSBonjourServices:
++          - _nx2apple-saves._tcp
++        NSLocalNetworkUsageDescription: NX2Apple uses the local network to find and sync game saves with your Mac.
+         UIApplicationSceneManifest:
+           UIApplicationSupportsMultipleScenes: false
+           UISceneConfigurations:

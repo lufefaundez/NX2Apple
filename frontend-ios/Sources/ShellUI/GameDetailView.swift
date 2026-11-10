@@ -71,12 +71,25 @@ public struct GameDetailView: View {
             .accessibilityElement(children: .combine)
         }
         group(ShellStrings.text("Cloud saves")) {
+            #if os(tvOS)
+            let defaultCloudNote = ShellStrings.text("Connect to your Mac over Wi-Fi to sync saves.")
+            #else
+            let defaultCloudNote = ShellStrings.text("Choose the same iCloud Drive folder you use on your Mac.")
+            #endif
             SourceRow(symbol: detail.cloudSaves == nil ? "icloud.slash" : "icloud",
                       title: detail.cloudSaves ?? ShellStrings.text("Off"),
-                      note: detail.cloudNote.isEmpty ? ShellStrings.text("Choose the same iCloud Drive folder you use on your Mac.") : detail.cloudNote) {
+                      note: detail.cloudNote.isEmpty ? defaultCloudNote : detail.cloudNote) {
                 #if !os(tvOS)
                 GameSettingsGlassButton(title: ShellStrings.text("Choose folder…")) { actions.onPickCloudSaves(detail.id) }.shellTarget("set.cloud") { actions.onPickCloudSaves(detail.id) }
                 #endif
+                GameSettingsGlassButton(title: detail.cloudSyncing ? ShellStrings.text("Syncing…") : ShellStrings.text("Sync now")) {
+                    actions.onSyncCloudSaves(detail.id)
+                }
+                .accessibilityIdentifier("set.cloud.sync")
+                .disabled(detail.cloudSaves == nil || detail.cloudSyncing)
+                .shellTarget("set.cloud.sync", enabled: detail.cloudSaves != nil && !detail.cloudSyncing) {
+                    actions.onSyncCloudSaves(detail.id)
+                }
                 if detail.cloudCanUseShell {
                     GameSettingsGlassButton(title: ShellStrings.text("Use Settings folder")) { actions.onUseShellCloud(detail.id) }.shellTarget("set.cloud.shell") { actions.onUseShellCloud(detail.id) }
                 }
@@ -84,6 +97,13 @@ public struct GameDetailView: View {
                     GameSettingsGlassButton(title: ShellStrings.text("Turn off")) { actions.onDisableCloudSaves(detail.id) }.accessibilityLabel(ShellStrings.text("Turn off cloud saves"))
                         .shellTarget("set.cloud.off") { actions.onDisableCloudSaves(detail.id) }
                 }
+            }
+            if !detail.cloudSyncStatus.isEmpty {
+                Text(detail.cloudSyncStatus)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("set.cloud.status")
             }
         }
         if !detail.game.version.isEmpty {

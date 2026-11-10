@@ -49,11 +49,21 @@ struct ShellSettingsView: View {
     @Environment(\.shellNativeBars) private var nativeBars
     var store: ShellSettingsStore = .current
     var actions: ShellActions
+    var shellCloudSyncing: Bool = false
+    var shellCloudStatus: String = ""
+    var bridgeDiscovering: Bool = false
     var onClose: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.shellFocus) private var focus
     /// Counts the changes in the defaults, so the rows read the store again.
     @State private var revision = 0
+    @State private var urlDraft = ""
+    @State private var tokenDraft = ""
+    @State private var syncedStoreURL = ""
+    @State private var syncedStoreToken = ""
+    @FocusState private var focusedField: BridgeField?
+
+    private enum BridgeField: Hashable { case url, token }
 
     var body: some View {
         let _ = revision
@@ -90,8 +100,10 @@ struct ShellSettingsView: View {
                 } footer: {
                     Text(ShellStrings.text("Games look for their data here. Keep one romfs.img per game in any folder inside. Each game is found by the image itself, so the folder names do not matter. Each game can also have a folder of its own."))
                 }
+                #endif
 
                 Section {
+                    #if !os(tvOS)
                     Button(action: actions.onPickShellCloud) {
                         LabeledContent {
                             Text(store.cloudSavesFolderName ?? ShellStrings.text("Choose folder…"))
@@ -109,10 +121,123 @@ struct ShellSettingsView: View {
                             .accessibilityLabel(ShellStrings.text("Turn off cloud saves"))
                             .shellTarget("shs.cloud.off", action: actions.onClearShellCloud)
                     }
+                    #endif
+                    Button {
+                        commitBridge()
+                        actions.onSyncAllCloudSaves()
+                    } label: {
+                        Label(shellCloudSyncing ? ShellStrings.text("Syncing…") : ShellStrings.text("Sync now"), systemImage: "arrow.triangle.2.circlepath")
+                            .labelStyle(SettingsRowLabelStyle())
+                    }
+                    .disabled(shellCloudSyncing)
+                    .accessibilityIdentifier("shellSettings.cloud.sync")
+                    .shellTarget("shs.cloud.sync", enabled: !shellCloudSyncing) {
+                        commitBridge()
+                        actions.onSyncAllCloudSaves()
+                    }
+                    if !shellCloudStatus.isEmpty {
+                        Text(shellCloudStatus)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("shellSettings.cloud.status")
+                    }
                 } footer: {
+                    #if os(tvOS)
+                    Text(ShellStrings.text("Connect to your Mac over Wi-Fi to sync saves."))
+                    #else
                     Text(ShellStrings.text("Games without a folder of their own save here. Choose the same iCloud Drive folder you use on your Mac."))
+                    #endif
                 }
 
+                Section {
+                    #if os(tvOS)
+                    TextField(ShellStrings.text("Server address"), text: $urlDraft, prompt: Text(verbatim: "192.168.1.10:47921"))
+                        .focused($focusedField, equals: .url)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .onSubmit { commitBridge() }
+                        .accessibilityIdentifier("shellSettings.bridge.url")
+                        .shellTarget("shs.bridge.url") { focusedField = .url }
+                    SecureField(ShellStrings.text("Access key"), text: $tokenDraft, prompt: Text(verbatim: "••••••"))
+                        .focused($focusedField, equals: .token)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit { commitBridge() }
+                        .accessibilityIdentifier("shellSettings.bridge.token")
+                        .shellTarget("shs.bridge.token") { focusedField = .token }
+                    #else
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(ShellStrings.text("Server address"), systemImage: "network")
+                            .labelStyle(SettingsRowLabelStyle())
+                        TextField(ShellStrings.text("Server address"), text: $urlDraft, prompt: Text(verbatim: "192.168.1.10:47921"))
+                            .focused($focusedField, equals: .url)
+                            .autocorrectionDisabled()
+                            #if !os(macOS)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            #endif
+                            .onSubmit { commitBridge() }
+                            .accessibilityIdentifier("shellSettings.bridge.url")
+                    }
+                    .shellTarget("shs.bridge.url") { focusedField = .url }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(ShellStrings.text("Access key"), systemImage: "key")
+                            .labelStyle(SettingsRowLabelStyle())
+                        SecureField(ShellStrings.text("Access key"), text: $tokenDraft, prompt: Text(verbatim: "••••••"))
+                            .focused($focusedField, equals: .token)
+                            .autocorrectionDisabled()
+                            #if !os(macOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                            .onSubmit { commitBridge() }
+                            .accessibilityIdentifier("shellSettings.bridge.token")
+                    }
+                    .shellTarget("shs.bridge.token") { focusedField = .token }
+                    #endif
+
+                    Button {
+                        let t = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if t != (store.saveBridgeToken ?? "") {
+                            actions.onSaveBridgeChange(store.saveBridgeURL ?? "", t)
+                        }
+                        actions.onDiscoverSaveBridge()
+                    } label: {
+                        Label(bridgeDiscovering ? ShellStrings.text("Searching…") : ShellStrings.text("Find Mac on Wi-Fi"), systemImage: "wifi")
+                            .labelStyle(SettingsRowLabelStyle())
+                    }
+                    .disabled(bridgeDiscovering)
+                    .accessibilityIdentifier("shellSettings.bridge.scan")
+                    .shellTarget("shs.bridge.scan", enabled: !bridgeDiscovering) {
+                        let t = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if t != (store.saveBridgeToken ?? "") {
+                            actions.onSaveBridgeChange(store.saveBridgeURL ?? "", t)
+                        }
+                        actions.onDiscoverSaveBridge()
+                    }
+
+                    if !urlDraft.isEmpty || !tokenDraft.isEmpty {
+                        Button(ShellStrings.text("Clear save server"), role: .destructive) {
+                            urlDraft = ""
+                            tokenDraft = ""
+                            actions.onSaveBridgeChange("", "")
+                        }
+                        .accessibilityIdentifier("shellSettings.bridge.clear")
+                        .shellTarget("shs.bridge.clear") {
+                            urlDraft = ""
+                            tokenDraft = ""
+                            actions.onSaveBridgeChange("", "")
+                        }
+                    }
+                } header: {
+                    Text(ShellStrings.text("Save server"))
+                } footer: {
+                    Text(ShellStrings.text("Sync saves with your Mac over Wi-Fi when iCloud Drive is unavailable."))
+                }
+
+                #if !os(tvOS)
                 Section {
                     TouchArrangeRow(arranged: !store.touchLayout.isEmpty)
                 }
@@ -150,7 +275,36 @@ struct ShellSettingsView: View {
         }
         .tint(ShellPalette.cream)
         .preferredColorScheme(.dark)
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in revision += 1 }
+        .onAppear { syncDraftsFromStore(force: true) }
+        .onDisappear { commitBridge() }
+        .onChange(of: focusedField) { old, new in
+            if old != nil && new != old { commitBridge() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            revision += 1
+            syncDraftsFromStore(force: false)
+        }
+    }
+
+    private func syncDraftsFromStore(force: Bool) {
+        let u = store.saveBridgeURL ?? ""
+        let t = store.saveBridgeToken ?? ""
+        if force || u != syncedStoreURL {
+            syncedStoreURL = u
+            urlDraft = u
+        }
+        if force || t != syncedStoreToken {
+            syncedStoreToken = t
+            tokenDraft = t
+        }
+    }
+
+    private func commitBridge() {
+        let u = urlDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if u != (store.saveBridgeURL ?? "") || t != (store.saveBridgeToken ?? "") {
+            actions.onSaveBridgeChange(u, t)
+        }
     }
 }
 

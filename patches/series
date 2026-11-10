@@ -66,3 +66,4 @@
 0099-nvn-decode-bc-buffer-to-texture-copies-into-unpa.patch
 0100-support-tvos-compilation-and-dual-tier-icloud-sa.patch
 0101-add-apple-tv-4k-tvos-target-support-a15-cpu-flag.patch
+0102-add-manual-cloud-save-sync-and-save-bridge-setti.patch
