@@ -18,6 +18,8 @@ struct CloudSavesCard: View {
     @State private var revision = 0
     @State private var last: (state: CloudSaveSync.LogState?, date: Date?)?? = nil
     @State private var problem: String?
+    @State private var isSyncing = false
+    @State private var syncNotice: String?
 
     private var store: GameCloudSaves { saves ?? GameCloudSaves(titleID: game.titleID, appPath: game.appPath) }
     static let attention = Color(red: 1, green: 0.78, blue: 0.24)
@@ -33,6 +35,10 @@ struct CloudSavesCard: View {
                 if let check, let notice = notice(check) {
                     Divider().opacity(0.25).padding(.leading, 18)
                     notice
+                }
+                if let syncNotice {
+                    Divider().opacity(0.25).padding(.leading, 18)
+                    noticeRow("arrow.triangle.2.circlepath.icloud", syncNotice, LauncherPalette.cream)
                 }
                 Divider().opacity(0.25).padding(.leading, 18)
                 lastRow
@@ -65,6 +71,9 @@ struct CloudSavesCard: View {
                 Button(loc.t("cloud.turnOff")) { change { try store.turnOff() } }
                     .padTarget("cloud.off", scope: "launch") { change { try store.turnOff() } }
             }
+            Button(isSyncing ? loc.t("cloud.syncing") : loc.t("cloud.syncNow")) { runSync(setting.folder) }
+                .disabled(isSyncing)
+                .padTarget("cloud.syncNow", scope: "launch") { if !isSyncing { runSync(setting.folder) } }
             Button(loc.t("cloud.choose")) { choose(from: setting.folder) }
                 .padTarget("cloud.choose", scope: "launch") { choose(from: setting.folder) }
         }
@@ -175,6 +184,28 @@ struct CloudSavesCard: View {
     private func change(_ body: () throws -> Void) {
         do { try body(); problem = nil } catch { problem = String(format: loc.t("cloud.failed"), error.localizedDescription) }
         revision += 1
+    }
+
+    private func runSync(_ folder: String?) {
+        isSyncing = true
+        syncNotice = nil
+        let tid = game.titleID
+        let home = self.home
+        DispatchQueue.global(qos: .userInitiated).async {
+            let res = CloudSaveSync.syncNow(titleID: tid, folder: folder, home: home)
+            DispatchQueue.main.async {
+                isSyncing = false
+                switch res {
+                case .downloaded: syncNotice = loc.t("cloud.syncedLocal")
+                case .uploaded: syncNotice = loc.t("cloud.syncedRemote")
+                case .upToDate: syncNotice = loc.t("cloud.syncedUpToDate")
+                case .noCloudSave: syncNotice = loc.t("cloud.noSave")
+                case .failed(let err): syncNotice = String(format: loc.t("cloud.failed"), err)
+                }
+                revision += 1
+                readLog()
+            }
+        }
     }
 
     private func readLog() {

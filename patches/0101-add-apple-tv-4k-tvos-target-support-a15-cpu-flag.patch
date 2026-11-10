@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 786771dc3192217c0d21122c48130d7c1d1fab69 Mon Sep 17 00:00:00 2001
 From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
 Date: Sun, 8 Nov 2026 16:05:00 -0300
 Subject: [PATCH] Add Apple TV 4K tvOS target support, A15 CPU flags, and save
@@ -7,7 +7,6 @@ Subject: [PATCH] Add Apple TV 4K tvOS target support, A15 CPU flags, and save
 Upstream-Status: pending
 Reason: Apple TV 4K native tvOS target support, A15 Bionic CPU architecture flag, and tvOS gamepad integration
 Issue: LNPANDY/NX2Apple#731
-
 ---
  dm/gfx/tools/gl_shaders.py               |   6 +-
  dm/gfx/tools/host_msl.py                 |   6 +-
@@ -17,13 +16,13 @@ Issue: LNPANDY/NX2Apple#731
  dm/host/Makefile                         |   5 +-
  dm/host/haptics_apple.m                  |   6 +-
  dm/host/memstat.m                        |   8 +-
- dm/host/save_sync.c                      |  18 ++-
+ dm/host/save_sync.c                      |  21 +++-
  dm/host/save_sync.h                      |   4 +
  dm/host/tests/Makefile                   |   4 +-
  dm/host/tests/t_save_sync.c              |  92 ++++++++++++--
  dm/host/web_apple.m                      |  15 +++
  dm/ios/Shell/ShellApp.swift              |  17 ++-
- dm/ios/Shell/ShellMain.m                 |  28 ++++-
+ dm/ios/Shell/ShellMain.m                 |  32 ++++-
  dm/ios/Sources/CloudSaves.m              |  19 +++
  dm/ios/Sources/DataBookmark.m            |   7 ++
  dm/ios/Sources/DmGamepad.m               |  62 +++++++++-
@@ -40,7 +39,7 @@ Issue: LNPANDY/NX2Apple#731
  dm/ios/tools/gen_build.py                |  13 +-
  dm/mac/pack_app.py                       |  10 +-
  scripts/build_ipa_from_nsp.py            | 148 +++++++++++++----------
- 31 files changed, 603 insertions(+), 157 deletions(-)
+ 31 files changed, 609 insertions(+), 158 deletions(-)
 
 diff --git a/dm/gfx/tools/gl_shaders.py b/dm/gfx/tools/gl_shaders.py
 index 0a87351..fc88db2 100644
@@ -286,7 +285,7 @@ index b2e4f28..8ca3dbf 100644
  #endif
      pthread_t th; pthread_create(&th, NULL, thrcpu_thread, spec); pthread_detach(th);
 diff --git a/dm/host/save_sync.c b/dm/host/save_sync.c
-index 9e46d9f..1df8779 100644
+index 9e46d9f..0802b07 100644
 --- a/dm/host/save_sync.c
 +++ b/dm/host/save_sync.c
 @@ -327,6 +327,10 @@ static int backup_dir(const char *save, const char *side, char *out, size_t n) {
@@ -300,7 +299,17 @@ index 9e46d9f..1df8779 100644
  // DM_SAVE_SYNC → <folder>/<title ID>/save.dmsync; 0 when sync is off
  static int cloud_file(const char *title, char *out, size_t n) {
      const char *v = getenv("DM_SAVE_SYNC"); char dir[PATH_MAX], id[24];
-@@ -349,6 +353,7 @@ static int cloud_file(const char *title, char *out, size_t n) {
+@@ -340,7 +344,8 @@ static int cloud_file(const char *title, char *out, size_t n) {
+             else SLOG("off: iCloud Drive is not on for this Mac (no %s)", drive);
+             return 0;
+         }
+-        snprintf(dir, sizeof dir, "%s/nxnative Saves", drive);
++        snprintf(dir, sizeof dir, "%s/NX Save data", drive);
++        if (stat(dir, &st)) snprintf(dir, sizeof dir, "%s/nxnative Saves", drive);
+ #else
+         SLOG("off: DM_SAVE_SYNC=icloud is the Mac's iCloud Drive folder; on this device, choose the folder in the launcher (Cloud saves)");
+         return 0;
+@@ -349,6 +354,7 @@ static int cloud_file(const char *title, char *out, size_t n) {
      size_t L = strlen(dir); while (L > 1 && dir[L - 1] == '/') dir[--L] = 0;
      upper_title(title, id, sizeof id);
      if (!*id || strchr(id, '/')) return 0;
@@ -308,7 +317,7 @@ index 9e46d9f..1df8779 100644
      // The game's own folder chosen instead of the one above it (a picker shows <folder>/<title ID> once another device has synced): taken as it is, not given a second <title ID>
      const char *last = strrchr(dir, '/');
      if (!strcasecmp(last ? last + 1 : dir, id)) return snprintf(out, n, "%s/save.dmsync", dir) < (int)n;
-@@ -433,8 +438,11 @@ static int send_save(const char *save, const char *title, const char *cloud) {
+@@ -433,8 +439,11 @@ static int send_save(const char *save, const char *title, const char *cloud) {
          when(other.saved, t, sizeof t);
          SLOG("the cloud's save (from %s, saved %s) changed since this device's last sync; this device's newer one replaces it, and it is kept in %s", other.device, t, kept);
      }
@@ -322,7 +331,7 @@ index 9e46d9f..1df8779 100644
      write_base(save, mine.hash); ok = 1;
      when(mine.saved, t, sizeof t);
      SLOG("sent: %d files, saved %s, to %s", mine.files, t, cloud);
-@@ -542,7 +550,12 @@ int save_sync_after_exit(const char *save, const char *title) {   // save: DM_SA
+@@ -542,7 +551,12 @@ int save_sync_after_exit(const char *save, const char *title) {   // save: DM_SA
  }
  
  // ---------- the platform's parts: these defaults are plain file copies, which the Mac's iCloud Drive takes (it downloads a file a read asks for) ----------
@@ -335,7 +344,7 @@ index 9e46d9f..1df8779 100644
      int in = open(cloud, O_RDONLY); if (in < 0) return errno == ENOENT ? 0 : -1;
      int out = open(local, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (out < 0) { close(in); return -1; }
      int r = copy_fd(in, out); close(in);
-@@ -553,6 +566,7 @@ __attribute__((weak)) int front_save_sync_fetch(const char *cloud, const char *l
+@@ -553,6 +567,7 @@ __attribute__((weak)) int front_save_sync_fetch(const char *cloud, const char *l
  
  // Written beside the cloud file under a .nosync name (iCloud Drive does not upload those) and renamed over it: iCloud sees one whole new file
  __attribute__((weak)) int front_save_sync_store(const char *local, const char *cloud) {
@@ -567,7 +576,7 @@ index 8dbe45f..b98c9a3 100644
          for entry in model.entries {
              fputs("shell: game \(entry.id) \(entry.title) at \(entry.frameworkURL?.lastPathComponent ?? "-")\(entry.problem.map { ", broken: \($0.reason), \($0.detail)" } ?? "")\n", stderr)
 diff --git a/dm/ios/Shell/ShellMain.m b/dm/ios/Shell/ShellMain.m
-index 7fb0bfc..9e344a3 100644
+index 7fb0bfc..2c9fcb7 100644
 --- a/dm/ios/Shell/ShellMain.m
 +++ b/dm/ios/Shell/ShellMain.m
 @@ -18,7 +18,13 @@ static dm_glue_present_fn g_present;
@@ -1945,3 +1954,6 @@ index 2d88a22..56f5c1c 100755
      tree_tar.unpack(xcode_data, say)
      run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
      if not out_ipa.is_file(): raise BuildError(f'no IPA at {out_ipa}')
+-- 
+2.53.0
+
