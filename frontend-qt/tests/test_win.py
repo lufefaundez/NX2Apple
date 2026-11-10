@@ -387,7 +387,7 @@ class HostSourcesTest(unittest.TestCase):
         names = {p.name for p in files}
         # from SRC=
         for must in ('loader.c', 'hle.c', 'crash.c', 'probe.c', 'thread.c',
-                     'memstat.m', 'haptics_apple.m', 'entry.S', 'main.c'):
+                     'memstat.m', 'haptics_apple.m', 'stats_apple.m', 'entry.S', 'main.c'):
             self.assertIn(must, names, f'{must} missing from the host source list')
         # Mac-only sources are dropped
         self.assertNotIn('front_mac.m', names)

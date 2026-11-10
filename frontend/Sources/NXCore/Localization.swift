@@ -73,6 +73,7 @@ package enum L10n {
     package static let sv: [String: String] = catalogs["sv"] ?? [:]
     package static let de: [String: String] = catalogs["de"] ?? [:]
     package static let fr: [String: String] = catalogs["fr"] ?? [:]
+    package static let es: [String: String] = catalogs["es"] ?? [:]
 
     /// The text of `key` in `lang`, else the English text, else the key itself (it shows up in the UI rather than a blank control).
     package static func string(_ key: String, _ lang: Lang) -> String {

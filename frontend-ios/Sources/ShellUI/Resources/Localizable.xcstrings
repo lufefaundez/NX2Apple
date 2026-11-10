@@ -122,7 +122,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "16:9 (cambio)"
+            "value": "16:9 (Switch)"
           }
         },
         "fr": {
@@ -538,7 +538,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Eliminar también los guardados"
+            "value": "Eliminar también las partidas"
           }
         },
         "fr": {
@@ -590,7 +590,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "ingles americano"
+            "value": "Inglés estadounidense"
           }
         },
         "fr": {
@@ -902,7 +902,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "en el borde"
+            "value": "En el borde"
           }
         },
         "fr": {
@@ -1110,7 +1110,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "portugués brasileño"
+            "value": "Portugués brasileño"
           }
         },
         "fr": {
@@ -1214,7 +1214,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "inglés británico"
+            "value": "Inglés británico"
           }
         },
         "fr": {
@@ -1266,7 +1266,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Crea este juego nuevamente en tu Mac e instálalo en este dispositivo. La aplicación para Mac verifica cada archivo mientras se compila, para que la nueva copia esté completa."
+            "value": "Compila este juego de nuevo en tu Mac e instálalo en este dispositivo. La app de Mac verifica cada archivo al compilar para asegurar una copia completa."
           }
         },
         "fr": {
@@ -1526,7 +1526,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "francés canadiense"
+            "value": "Francés canadiense"
           }
         },
         "fr": {
@@ -1786,7 +1786,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Elige"
+            "value": "Elegir"
           }
         },
         "fr": {
@@ -2254,7 +2254,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cerrar controladores"
+            "value": "Cerrar mandos"
           }
         },
         "fr": {
@@ -2306,7 +2306,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Guarda en la nube"
+            "value": "Partidas en la nube"
           }
         },
         "fr": {
@@ -2358,7 +2358,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Guardado en la nube en"
+            "value": "Partidas en iCloud"
           }
         },
         "fr": {
@@ -2774,7 +2774,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "personalizado"
+            "value": "Personalizado"
           }
         },
         "fr": {
@@ -2878,7 +2878,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "pad direccional abajo"
+            "value": "Cruceta abajo"
           }
         },
         "fr": {
@@ -2930,7 +2930,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "pad direccional izquierdo"
+            "value": "Cruceta izquierda"
           }
         },
         "fr": {
@@ -2982,7 +2982,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "pad direccional derecho"
+            "value": "Cruceta derecha"
           }
         },
         "fr": {
@@ -3034,7 +3034,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "pad direccional arriba"
+            "value": "Cruceta arriba"
           }
         },
         "fr": {
@@ -3086,7 +3086,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Disminución"
+            "value": "Disminuir"
           }
         },
         "fr": {
@@ -3242,7 +3242,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Eliminar juego y guardar"
+            "value": "Eliminar juego y partidas"
           }
         },
         "fr": {
@@ -3398,7 +3398,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Elimina los datos del juego en este dispositivo. Tú eliges si sus partidas guardadas también van."
+            "value": "Elimina los datos del juego en este dispositivo. Tú eliges si también se borran sus partidas."
           }
         },
         "fr": {
@@ -3658,7 +3658,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Atracado"
+            "value": "Acoplado (TV)"
           }
         },
         "fr": {
@@ -3814,7 +3814,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "abajo"
+            "value": "Abajo"
           }
         },
         "fr": {
@@ -3918,7 +3918,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Arrastre nuevamente para moverlo o use las flechas para un paso."
+            "value": "Arrástralo de nuevo para moverlo o usa las flechas paso a paso."
           }
         },
         "fr": {
@@ -3970,7 +3970,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "holandés"
+            "value": "Neerlandés"
           }
         },
         "fr": {
@@ -4074,7 +4074,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Edite los controles aquí. Guardar cuando haya terminado."
+            "value": "Edita los controles aquí. Guarda al terminar."
           }
         },
         "fr": {
@@ -4126,7 +4126,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Activar guardado en la nube"
+            "value": "Activar partidas en la nube"
           }
         },
         "fr": {
@@ -4178,7 +4178,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codificar hilo"
+            "value": "Hilo de codificación"
           }
         },
         "fr": {
@@ -4490,7 +4490,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El relleno recorta la imagen 16:9 del juego para cubrir la pantalla. Se pueden cortar barras de salud, subtítulos o mapas cerca de los bordes. Una imagen a pantalla completa sin recortar necesita un parche para cada juego."
+            "value": "Rellenar recorta la imagen 16:9 del juego para cubrir toda la pantalla. Barras de vida, subtítulos o mapas cerca de los bordes pueden cortarse. Para llenar la pantalla sin recortar hace falta un parche específico."
           }
         },
         "fr": {
@@ -4594,7 +4594,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Encajar"
+            "value": "Ajustar"
           }
         },
         "fr": {
@@ -4646,7 +4646,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reparar archivos de juego"
+            "value": "Reparar archivos"
           }
         },
         "fr": {
@@ -4750,7 +4750,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Solo para controladores de juegos. Los menús de esta aplicación mantienen A para confirmar y B para regresar."
+            "value": "Solo para los mandos dentro de los juegos. En los menús de esta app, A siempre confirma y B vuelve atrás."
           }
         },
         "fr": {
@@ -4802,7 +4802,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sólo para este juego. Un botón que se deja solo hace lo que hace en todos los juegos."
+            "value": "Solo para este juego. Si dejas un botón sin cambios, hará lo que hace en todos los juegos."
           }
         },
         "fr": {
@@ -4958,7 +4958,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Contador de velocidad de fotogramas"
+            "value": "HUD de estadísticas"
           }
         },
         "fr": {
@@ -5010,7 +5010,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "francés"
+            "value": "Francés"
           }
         },
         "fr": {
@@ -5062,7 +5062,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Desde Configuración"
+            "value": "Desde Ajustes"
           }
         },
         "fr": {
@@ -5166,7 +5166,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "juego"
+            "value": "Juego"
           }
         },
         "fr": {
@@ -5322,7 +5322,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "estruendo del juego"
+            "value": "Vibración del juego"
           }
         },
         "fr": {
@@ -5426,7 +5426,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "propio del juego"
+            "value": "Propio del juego"
           }
         },
         "fr": {
@@ -5478,7 +5478,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mejorador del juego"
+            "value": "Reescalado del juego"
           }
         },
         "fr": {
@@ -5582,7 +5582,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los juegos buscan sus datos aquí. Mantenga un romfs.img por juego en cualquier carpeta del interior. Cada juego se encuentra por la propia imagen, por lo que los nombres de las carpetas no importan. Cada juego también puede tener una carpeta propia."
+            "value": "Los juegos buscan sus datos aquí. Mantén un romfs.img por juego en cualquier subcarpeta. Cada juego se identifica por la propia imagen, así que el nombre de las carpetas no importa. Cada juego también puede usar su propia carpeta."
           }
         },
         "fr": {
@@ -5686,7 +5686,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "alemán"
+            "value": "Alemán"
           }
         },
         "fr": {
@@ -5790,7 +5790,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "De mano"
+            "value": "Portátil"
           }
         },
         "fr": {
@@ -5894,7 +5894,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mantenga presionado B para cerrar"
+            "value": "Mantén presionado B para cerrar"
           }
         },
         "fr": {
@@ -5946,7 +5946,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Retener fotogramas cuando llegue tarde"
+            "value": "Retener fotogramas si van tarde"
           }
         },
         "fr": {
@@ -5998,7 +5998,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "como arreglar"
+            "value": "Cómo reparar"
           }
         },
         "fr": {
@@ -6102,7 +6102,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "en su lugar"
+            "value": "En su lugar"
           }
         },
         "fr": {
@@ -6154,7 +6154,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "aumentar"
+            "value": "Aumentar"
           }
         },
         "fr": {
@@ -6362,7 +6362,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "italiano"
+            "value": "Italiano"
           }
         },
         "fr": {
@@ -6414,7 +6414,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "japonés"
+            "value": "Japonés"
           }
         },
         "fr": {
@@ -6518,7 +6518,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mantiene un archivo de canalización y utiliza más memoria."
+            "value": "Mantiene un archivo de pipelines y usa más memoria."
           }
         },
         "fr": {
@@ -6570,7 +6570,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mantiene un archivo de canalización, utiliza más memoria."
+            "value": "Conserva una caché de pipelines; usa más memoria."
           }
         },
         "fr": {
@@ -6622,7 +6622,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "coreano"
+            "value": "Coreano"
           }
         },
         "fr": {
@@ -6726,7 +6726,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Paisaje (pantalla exterior Duo)"
+            "value": "Horizontal (pantalla exterior Duo)"
           }
         },
         "fr": {
@@ -6830,7 +6830,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "español latinoamericano"
+            "value": "Español latinoamericano"
           }
         },
         "fr": {
@@ -6986,7 +6986,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "botón izquierdo"
+            "value": "Botón izquierdo"
           }
         },
         "fr": {
@@ -7038,7 +7038,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "hombro izquierdo"
+            "value": "Botón superior izq. (L)"
           }
         },
         "fr": {
@@ -7142,7 +7142,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Presionar el joystick izquierdo"
+            "value": "Clic palanca izquierda"
           }
         },
         "fr": {
@@ -7350,7 +7350,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pantalla de partido"
+            "value": "Igualar pantalla"
           }
         },
         "fr": {
@@ -7454,7 +7454,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Tuberías metálicas 4."
+            "value": "Pipelines de Metal 4"
           }
         },
         "fr": {
@@ -7506,7 +7506,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "metalfx"
+            "value": "MetalFX"
           }
         },
         "fr": {
@@ -7870,7 +7870,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Muévelo con el D-pad. A o B lo deja."
+            "value": "Muévelo con la cruceta. A o B lo suelta."
           }
         },
         "fr": {
@@ -7974,7 +7974,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "moverse a la derecha"
+            "value": "Mover a la derecha"
           }
         },
         "fr": {
@@ -8130,7 +8130,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "movido"
+            "value": "Movido"
           }
         },
         "fr": {
@@ -8182,7 +8182,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Nombrados como en un controlador Switch, por donde se sientan."
+            "value": "Nombrados como en un mando de Switch, según su posición."
           }
         },
         "fr": {
@@ -8806,7 +8806,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "encendido"
+            "value": "Encendido"
           }
         },
         "fr": {
@@ -8910,7 +8910,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abre el mapeo de botones."
+            "value": "Abre la asignación de botones"
           }
         },
         "fr": {
@@ -8962,7 +8962,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Abre el botón de prueba."
+            "value": "Abre la prueba de botones"
           }
         },
         "fr": {
@@ -9066,7 +9066,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "sobre la imagen"
+            "value": "Sobre la imagen"
           }
         },
         "fr": {
@@ -9222,7 +9222,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Superposición de rendimiento"
+            "value": "HUD de rendimiento"
           }
         },
         "fr": {
@@ -9378,7 +9378,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preconstrucción de tubería"
+            "value": "Precompilar pipelines"
           }
         },
         "fr": {
@@ -9482,7 +9482,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Reproducir %@"
+            "value": "Jugar %@"
           }
         },
         "fr": {
@@ -9534,7 +9534,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ jugado"
+            "value": "Jugado %@"
           }
         },
         "fr": {
@@ -9794,7 +9794,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "portugués"
+            "value": "Portugués"
           }
         },
         "fr": {
@@ -9898,7 +9898,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Las posiciones se comparten entre vistas de paisaje."
+            "value": "Las posiciones se comparten entre todas las vistas horizontales."
           }
         },
         "fr": {
@@ -10002,7 +10002,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Presione cualquier botón en un controlador"
+            "value": "Presiona cualquier botón en un mando"
           }
         },
         "fr": {
@@ -10106,7 +10106,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "¿Devolver todos los controles del diseño %@ a su lugar incorporado?"
+            "value": "¿Devolver todos los controles del diseño %@ a su posición original?"
           }
         },
         "fr": {
@@ -10626,7 +10626,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Restablecer valores probados"
+            "value": "Restablecer valores"
           }
         },
         "fr": {
@@ -10730,7 +10730,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "botón derecho"
+            "value": "Botón derecho"
           }
         },
         "fr": {
@@ -10782,7 +10782,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "hombro derecho"
+            "value": "Botón superior der. (R)"
           }
         },
         "fr": {
@@ -10834,7 +10834,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Presionar el joystick derecho"
+            "value": "Clic palanca derecha"
           }
         },
         "fr": {
@@ -10886,7 +10886,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "gatillo derecho"
+            "value": "Gatillo derecho"
           }
         },
         "fr": {
@@ -10938,7 +10938,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Gire a horizontal para editar los controles."
+            "value": "Gira el dispositivo a horizontal para editar los controles."
           }
         },
         "fr": {
@@ -10990,7 +10990,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Corte de ruido"
+            "value": "Umbral mínimo de vibración"
           }
         },
         "fr": {
@@ -11042,7 +11042,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fuerza retumbante"
+            "value": "Intensidad de vibración"
           }
         },
         "fr": {
@@ -11094,7 +11094,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "ruso"
+            "value": "Ruso"
           }
         },
         "fr": {
@@ -11250,7 +11250,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los guardados también se eliminan y no se pueden recuperar."
+            "value": "Las partidas también se eliminan y no se pueden recuperar."
           }
         },
         "fr": {
@@ -11302,7 +11302,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los guardados permanecen a menos que elijas eliminarlos también."
+            "value": "Las partidas se conservan a menos que elijas eliminarlas también."
           }
         },
         "fr": {
@@ -11562,7 +11562,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Envía juegos"
+            "value": "Envía en juegos"
           }
         },
         "fr": {
@@ -11718,7 +11718,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Hombros y gatillos"
+            "value": "Botones L/R y gatillos"
           }
         },
         "fr": {
@@ -11978,7 +11978,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "español"
+            "value": "Español"
           }
         },
         "fr": {
@@ -12082,7 +12082,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ajustes preestablecidos de colocación de palos"
+            "value": "Posición de la palanca"
           }
         },
         "fr": {
@@ -12238,7 +12238,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cambia el juego con el botón en la parte superior central. 3D agrega el D-pad, L3 y R3."
+            "value": "Cambia de diseño dentro del juego con el botón superior central. 3D añade la cruceta, L3 y R3."
           }
         },
         "fr": {
@@ -12446,7 +12446,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Toque un botón para cambiar lo que envía."
+            "value": "Toca un botón para cambiar lo que envía."
           }
         },
         "fr": {
@@ -12550,7 +12550,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El primer arranque se espera unos minutos, una vez."
+            "value": "El primer inicio espera unos minutos para esto, una sola vez."
           }
         },
         "fr": {
@@ -12602,7 +12602,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los datos del juego en este dispositivo se eliminan y el juego sale de la lista. Una carpeta que usted mismo eligió no se toca. Envía los datos del juego desde tu Mac nuevamente para recuperarlos."
+            "value": "Los datos del juego en este dispositivo se eliminan y el juego sale de la lista. Una carpeta elegida por ti no se toca. Vuelve a enviar los datos desde tu Mac para recuperarlo."
           }
         },
         "fr": {
@@ -12914,7 +12914,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Comentarios táctiles"
+            "value": "Respuesta háptica táctil"
           }
         },
         "fr": {
@@ -12966,7 +12966,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "chino tradicional"
+            "value": "Chino tradicional"
           }
         },
         "fr": {
@@ -13122,7 +13122,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Gire el teléfono de lado para obtener una vista previa más grande."
+            "value": "Gira el iPhone en horizontal para ver una vista previa más grande."
           }
         },
         "fr": {
@@ -13226,7 +13226,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "arriba"
+            "value": "Arriba"
           }
         },
         "fr": {
@@ -13278,7 +13278,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Hasta un cuadro más de latencia de visualización."
+            "value": "Añade hasta un fotograma de latencia visual."
           }
         },
         "fr": {
@@ -13434,7 +13434,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ampliación"
+            "value": "Reescalado"
           }
         },
         "fr": {
@@ -13486,7 +13486,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usar la carpeta Configuración"
+            "value": "Usar carpeta de Ajustes"
           }
         },
         "fr": {
@@ -13850,7 +13850,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "ventana"
+            "value": "Ventana"
           }
         },
         "fr": {

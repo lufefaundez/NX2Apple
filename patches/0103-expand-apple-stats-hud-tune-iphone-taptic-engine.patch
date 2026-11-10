@@ -1,0 +1,1543 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 20:10:04 -0300
+Subject: [PATCH] Expand Apple stats HUD, tune iPhone Taptic Engine haptics,
+ and fix tvOS compile guards
+
+Upstream-Status: pending
+Reason: Apple CPU/GPU temp & battery stats HUD, iPhone CoreHaptics Taptic Engine tuning, and tvOS compile/test fixes
+Issue: lufefaundez/NX2Apple#2
+
+---
+ dm/host/Makefile                           |   4 +-
+ dm/host/crash.c                            |  10 +-
+ dm/host/front_mac.m                        | 116 ++++++-
+ dm/host/haptics_apple.h                    |   4 +
+ dm/host/haptics_apple.m                    | 101 +++++-
+ dm/host/hle_oe.c                           |   5 +
+ dm/host/stats_apple.h                      |  30 ++
+ dm/host/stats_apple.m                      | 366 +++++++++++++++++++++
+ dm/host/tests/Makefile                     |   5 +-
+ dm/host/tests/t_haptics_apple.m            |  50 ++-
+ dm/host/tests/t_stats_apple.m              | 143 ++++++++
+ dm/host/web_apple.m                        |   7 +-
+ dm/ios/Sources/DmGamepad.m                 |  67 +++-
+ dm/ios/Sources/front_ios.m                 | 117 ++++++-
+ dm/ios/Sources/main.m                      |   3 +
+ dm/ios/tests/duo/Sources/DuoRuntimeStubs.m |   6 +
+ dm/ios/tests/duo/Tests/DuoHarnessTests.m   |   9 +
+ dm/ios/tests/duo/project.yml               |   1 +
+ dm/ios/tools/build_ipa.sh                  |   4 +-
+ docs/env_switches.tsv                      |   9 +
+ 20 files changed, 1012 insertions(+), 45 deletions(-)
+ create mode 100644 dm/host/stats_apple.h
+ create mode 100644 dm/host/stats_apple.m
+ create mode 100644 dm/host/tests/t_stats_apple.m
+
+diff --git a/dm/host/Makefile b/dm/host/Makefile
+index a740163..7408d0e 100644
+--- a/dm/host/Makefile
++++ b/dm/host/Makefile
+@@ -20,7 +20,7 @@ GAME_H = gen/$(GAME)/game_profile.h
+ include ../mac/min_os.mk
+ CFLAGS=-O1 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
+ # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
+-SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c save_sync_remote.m memstat.m haptics_apple.m $(sort $(wildcard hle_*.c)) front_mac.m controllers_mac.m web_apple.m entry.S
++SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c save_sync_remote.m memstat.m haptics_apple.m stats_apple.m $(sort $(wildcard hle_*.c)) front_mac.m controllers_mac.m web_apple.m entry.S
+ # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
+ # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
+ GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
+@@ -80,7 +80,7 @@ endif
+ endif
+ .PHONY: FORCE
+ FORCE:
+-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h input_map.h input_preferences_mac.h pad_slots.h pad_map.h pad_motion.h steam_input.h controllers_mac.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h pad_joycon.h pad_joycon_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
++dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h input_map.h input_preferences_mac.h pad_slots.h pad_map.h pad_motion.h steam_input.h controllers_mac.h hle_haptics.h haptics_apple.h stats_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h pad_joycon.h pad_joycon_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
+ 	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework CloudKit -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+ clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx and dav1d builds; dmhost_* and *.dSYM beside them, as in .gitignore)
+ 	rm -rf gen dmhost dmhost_* *.dSYM
+diff --git a/dm/host/crash.c b/dm/host/crash.c
+index 21e7a3c..8982b7d 100644
+--- a/dm/host/crash.c
++++ b/dm/host/crash.c
+@@ -212,19 +212,27 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
+ }
+ // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)
+ // The alternate stack is released when the thread exits: the pthread key destructor is called at thread exit (disable the alternate stack first, then free). The game frequently starts short-lived threads, and without releasing each one leaks 64 KiB.
++#if !TARGET_OS_TV
+ static pthread_key_t g_altstack_key;
+ static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
+ static void altstack_free(void *p) { stack_t off = {.ss_flags = SS_DISABLE}; sigaltstack(&off, 0); free(p); }
+ static void altstack_key_init(void) { if (pthread_key_create(&g_altstack_key, altstack_free)) die("altstack key"); }
++#endif
+ void crash_thread_init(void) {
++#if !TARGET_OS_TV
+     pthread_once(&g_altstack_once, altstack_key_init);
+     if (pthread_getspecific(g_altstack_key)) return;                 // Repeated calls on the same thread do not allocate again
+     stack_t ss = {.ss_sp = malloc(65536), .ss_size = 65536}; sigaltstack(&ss, 0);
+     pthread_setspecific(g_altstack_key, ss.ss_sp);
++#endif
+ }
+ void crash_install(void) {
+     crash_thread_init();
+-    struct sigaction sa = {.sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_ONSTACK};
++    struct sigaction sa = {.sa_sigaction = on_crash, .sa_flags = SA_SIGINFO
++#if !TARGET_OS_TV
++        | SA_ONSTACK
++#endif
++    };
+     sigaction(SIGALRM, &sa, 0);
+     // Both watchdogs are turned on only when a test explicitly sets DM_WATCH / DM_WATCH_STALL: the product (the player launches from the desktop, no environment variables) turns on neither.
+     // Found by reading the code: iOS main.m did setenv DM_WATCH=30 by default → the player's launch was killed by SIGALRM at 30 s; the no-progress watchdog defaulted to 15 s → the pause menu (ticks stopped) was killed at 15 s
+diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
+index 9f478e8..fc96435 100644
+--- a/dm/host/front_mac.m
++++ b/dm/host/front_mac.m
+@@ -21,6 +21,7 @@
+ #include "controllers_mac.h"
+ #include "input_preferences_mac.h"
+ #include "haptics_apple.h"
++#include "stats_apple.h"
+ #include "home_quit.h"
+ #include "home_quit_mac.h"
+ #include "ctrl_prompt.h"
+@@ -320,6 +321,110 @@ int front_ctrl_support(int min, int max) {
+ // The picture's width / height (front.h front_picture_shape; 16:9 until the first present), which the present fits into the view
+ static _Atomic double g_picture_aspect = 16.0 / 9.0;
+ void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect = (double)w / h; }
++uint64_t mtl_present_count(void);
++
++// In-game stats HUD overlay (stats_apple.h): FPS, CPU/GPU °C, battery %, controller battery %.
++@interface DmStatsHudView : NSView
++@end
++@implementation DmStatsHudView
++- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
++@end
++
++@interface DmStatsHud : NSObject
++@property (nonatomic, strong) DmStatsHudView *view;
++@property (nonatomic, strong) NSTextField *label;
++@property (nonatomic, weak) NSMenuItem *menuItem;
++@property (nonatomic, strong) NSTimer *timer;
++@property (nonatomic) uint64_t fpsCount0;
++@property (nonatomic) double fpsTime0;
++@property (nonatomic) double lastFPS;
++@property (nonatomic) BOOL on;
++@end
++
++static DmStatsHud *g_stats_hud;
++
++@implementation DmStatsHud
++- (instancetype)initWithContentView:(NSView *)cv {
++    if ((self = [super init])) {
++        _lastFPS = NAN;
++        _view = [[DmStatsHudView alloc] initWithFrame:NSMakeRect(12, MAX(12, cv.bounds.size.height - 36), 160, 24)];
++        _view.wantsLayer = YES;
++        _view.layer.backgroundColor = [NSColor colorWithWhite:0 alpha:0.62].CGColor;
++        _view.layer.cornerRadius = 7.0;
++        _view.layer.masksToBounds = YES;
++        _view.autoresizingMask = NSViewMaxXMargin | NSViewMinYMargin;
++        _view.hidden = YES;
++
++        _label = [NSTextField labelWithString:@""];
++        _label.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightSemibold];
++        _label.textColor = NSColor.whiteColor;
++        _label.maximumNumberOfLines = 1;
++        _label.lineBreakMode = NSLineBreakByClipping;
++        [_view addSubview:_label];
++        [cv addSubview:_view];
++    }
++    return self;
++}
++- (void)layout {
++    NSView *cv = _view.superview;
++    if (!cv) return;
++    [_label sizeToFit];
++    CGFloat lw = ceil(_label.frame.size.width), lh = ceil(_label.frame.size.height);
++    CGFloat w = lw + 18.0, h = lh + 8.0;
++    _label.frame = NSMakeRect(9.0, 4.0, lw, lh);
++    CGFloat maxW = MAX(80.0, cv.bounds.size.width - 24.0);
++    if (w > maxW) w = maxW;
++    CGFloat y = MAX(12.0, cv.bounds.size.height - h - 12.0);
++    _view.frame = NSMakeRect(12.0, y, w, h);
++}
++- (void)refreshText {
++    char buf[256];
++    dm_stats_snapshot snap = dm_stats_read();
++    dm_stats_format_hud(_lastFPS, &snap, 0, buf, sizeof buf);
++    NSString *text = @(buf);
++    if (![_label.stringValue isEqualToString:text]) {
++        _label.stringValue = text;
++        [self layout];
++    }
++}
++- (void)setVisible:(BOOL)on persist:(BOOL)persist logChange:(BOOL)logChange {
++    _on = on;
++    _view.hidden = !on;
++    _menuItem.state = on ? NSControlStateValueOn : NSControlStateValueOff;
++    if (persist) [NSUserDefaults.standardUserDefaults setBool:on forKey:@"DmShowStatsHUD"];
++    if (logChange) LOG("front end: stats HUD %s", on ? "on" : "off");
++    if (on) {
++        _lastFPS = NAN;
++        _fpsCount0 = mtl_present_count();
++        _fpsTime0 = CACurrentMediaTime();
++        [self refreshText];
++        [self layout];
++        if (!_timer.isValid) {
++            __weak DmStatsHud *weak = self;
++            _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
++                (void)t;
++                DmStatsHud *s = weak;
++                if (!s || !s.on) return;
++                uint64_t n = mtl_present_count();
++                double now = CACurrentMediaTime(), dt = now - s.fpsTime0;
++                if (dt > 0.25 && dt < 2.5) s.lastFPS = (double)(n - s.fpsCount0) / dt;
++                else s.lastFPS = NAN;
++                s.fpsCount0 = n;
++                s.fpsTime0 = now;
++                [s refreshText];
++            }];
++        }
++    } else {
++        [_timer invalidate];
++        _timer = nil;
++    }
++}
++- (void)toggle:(id)sender {
++    (void)sender;
++    [self setVisible:!_on persist:YES logChange:YES];
++}
++@end
++
+ @interface DmGameView : NSView @end
+ @implementation DmGameView
+ - (void)mouseDown:(NSEvent *)e { [self mouseDragged:e]; }
+@@ -342,7 +447,7 @@ void front_picture_shape(int w, int h) { if (w > 0 && h > 0) g_picture_aspect =
+     NSSize px = [self convertSizeToBacking:self.bounds.size]; if (px.width < 1 || px.height < 1 || CGSizeEqualToSize(l.drawableSize, px)) return;
+     l.drawableSize = px; LOG("front end: drawable %.0fx%.0f", px.width, px.height);
+ }
+-- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
++- (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; if (g_stats_hud) [g_stats_hud layout]; }
+ - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
+ @end
+ 
+@@ -1282,6 +1387,15 @@ void front_run(void (*guest)(void)) {
+             dispatch_async(dispatch_get_main_queue(), ^{ [g_cheats_menu showPanel:nil]; });
+         [[bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""] setSubmenu:wm];
+         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
++        dm_stats_init();
++        g_stats_hud = [[DmStatsHud alloc] initWithContentView:v];
++        NSMenuItem *hudItem = [wm addItemWithTitle:@"Show Stats HUD" action:@selector(toggle:) keyEquivalent:@"f"];
++        hudItem.target = g_stats_hud;
++        hudItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
++        g_stats_hud.menuItem = hudItem;
++        const char *hudEnv = getenv("DM_SHOW_FPS");
++        BOOL hudOn = hudEnv && *hudEnv ? (atoi(hudEnv) != 0) : [NSUserDefaults.standardUserDefaults boolForKey:@"DmShowStatsHUD"];
++        [g_stats_hud setVisible:hudOn persist:NO logChange:hudOn];
+         [[bar addItemWithTitle:@"Controllers" action:nil keyEquivalent:@""] setSubmenu:front_controllers_menu()];
+         NSApp.mainMenu = bar;
+         const char *fs = getenv("DM_FULLSCREEN");   // 1 (or any value but 0): start in fullscreen; 0, the settings window's Window, or unset: a window
+diff --git a/dm/host/haptics_apple.h b/dm/host/haptics_apple.h
+index bd2ef35..85c17bd 100644
+--- a/dm/host/haptics_apple.h
++++ b/dm/host/haptics_apple.h
+@@ -7,6 +7,10 @@ void dm_haptics_apple_controller(int player, GCController *controller);
+ void dm_haptics_apple_controller_locality(int player, GCController *controller, GCHapticsLocality locality);
+ // Apply the controller cutoff after converting the game's bands and applying gain.
+ float dm_haptics_apple_controller_intensity(float intensity);
++// Adapt dual-motor HD Rumble for iPhone Taptic Engine (perceptual LRA gamma, dual-band sharpness, debounced transient edges).
++void dm_haptics_apple_phone_synthesize(const dm_vibration motors[2], float gain, float prev_intensity,
++    double now_sec, double *last_transient_sec, dm_haptic_level *out_level,
++    int *out_fire_transient, float *out_transient_intensity, float *out_transient_sharpness);
+ // Native HID alternative. Runs on the adapter's serial queue, refreshed at 40 ms
+ // while nonzero; receives zero on route changes/suspend/exit. Owner identifies
+ // an unchanged route. Never calls hardware on a guest thread.
+diff --git a/dm/host/haptics_apple.m b/dm/host/haptics_apple.m
+index 2dc5083..7aec3b3 100644
+--- a/dm/host/haptics_apple.m
++++ b/dm/host/haptics_apple.m
+@@ -32,6 +32,10 @@
+ @property(nonatomic) id<CHHapticPatternPlayer> previous;   // the pulse before the scheduled one, still playing
+ @property(nonatomic) NSTimeInterval pulseEnd;   // engine time at which the last scheduled pulse ends
+ @property(nonatomic) dm_haptic_level level;   // the level the next pulse starts at
++@property(nonatomic) float lastPhoneIntensity;
++@property(nonatomic) NSTimeInterval lastTransientAt;
++- (BOOL)applyLevel:(dm_haptic_level)level;
++- (void)applyPhone:(const dm_vibration[2])motors;
+ - (void)apply:(dm_haptic_level)level;
+ - (void)stop;
+ @end
+@@ -78,6 +82,45 @@ float dm_haptics_apple_controller_intensity(float x) {
+     x = isfinite(x) ? fmaxf(0, fminf(1, x)) : 0;
+     return x <= rumble_min ? 0 : (x - rumble_min) / (1 - rumble_min);
+ }
++static float clamp_unit(float x) { return isfinite(x) ? fmaxf(0.0f, fminf(1.0f, x)) : 0.0f; }
++void dm_haptics_apple_phone_synthesize(const dm_vibration motors[2], float g, float prev_intensity,
++    double now_sec, double *last_transient_sec, dm_haptic_level *out_level,
++    int *out_fire_transient, float *out_transient_intensity, float *out_transient_sharpness) {
++    if (out_level) *out_level = (dm_haptic_level){0.0f, 0.0f};
++    if (out_fire_transient) *out_fire_transient = 0;
++    if (out_transient_intensity) *out_transient_intensity = 0.0f;
++    if (out_transient_sharpness) *out_transient_sharpness = 0.0f;
++    if (!motors || !isfinite(g) || g <= 0.0f) return;
++
++    float p_sum = 0.0f, s_weighted = 0.0f;
++    for (int i = 0; i < 2; i++) {
++        float lo = clamp_unit(motors[i].amplitude_low), hi = clamp_unit(motors[i].amplitude_high);
++        float e_lo = lo * lo, e_hi = hi * hi;
++        float flo = isfinite(motors[i].frequency_low) && motors[i].frequency_low > 0.0f ? fmaxf(40.0f, fminf(250.0f, motors[i].frequency_low)) : 160.0f;
++        float fhi = isfinite(motors[i].frequency_high) && motors[i].frequency_high > 0.0f ? fmaxf(160.0f, fminf(1250.0f, motors[i].frequency_high)) : 320.0f;
++        float t_lo = logf(flo / 40.0f) / logf(250.0f / 40.0f);
++        float t_hi = logf(fhi / 160.0f) / logf(1250.0f / 160.0f);
++        float s_lo = 0.08f + 0.37f * t_lo;
++        float s_hi = 0.48f + 0.52f * t_hi;
++        p_sum += e_lo + e_hi;
++        s_weighted += e_lo * s_lo + e_hi * s_hi;
++    }
++    float rms = sqrtf(p_sum * 0.5f);
++    float raw = fminf(1.0f, rms * g);
++    float intensity = raw < 0.015f ? 0.0f : powf(raw, 0.72f);
++    float sharpness = (intensity > 0.0f && p_sum > 0.0f) ? fmaxf(0.0f, fminf(1.0f, s_weighted / p_sum)) : 0.0f;
++    if (out_level) *out_level = (dm_haptic_level){intensity, sharpness};
++
++    float prev = isfinite(prev_intensity) ? fmaxf(0.0f, prev_intensity) : 0.0f;
++    double last_t = last_transient_sec ? *last_transient_sec : 0.0;
++    int cooled = !isfinite(last_t) || last_t <= 0.0 || !isfinite(now_sec) || (now_sec - last_t) >= 0.035;
++    if (intensity >= 0.15f && (intensity - prev) >= 0.18f && cooled) {
++        if (out_fire_transient) *out_fire_transient = 1;
++        if (last_transient_sec && isfinite(now_sec)) *last_transient_sec = now_sec;
++        if (out_transient_intensity) *out_transient_intensity = fminf(1.0f, intensity * 1.15f);
++        if (out_transient_sharpness) *out_transient_sharpness = fmaxf(0.45f, sharpness);
++    }
++}
+ static void report(NSError *e, NSString *target, const char *stage) {
+     if (++errors <= 8 || errors % 64 == 0) {
+         fprintf(stderr, "[RED] haptics: %s %s: %s (%s %ld)\n", target.UTF8String, stage,
+@@ -92,6 +135,7 @@ static void report(NSError *e, NSString *target, const char *stage) {
+ @implementation DmRumbleChannel
+ - (void)stop {
+     self.generation++; self.silenceGeneration++;
++    self.lastPhoneIntensity = 0; self.lastTransientAt = 0;
+     self.engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) { (void)reason; }; self.engine.resetHandler = ^{};
+     if (self.simple) {
+         // Never cut a pulse: silence the playing ones and stop the engine once the last has ended
+@@ -163,18 +207,44 @@ static void report(NSError *e, NSString *target, const char *stage) {
+     if (![self.engine startAndReturnError:&error]) { [self engineFailed:error stage:"start engine"]; return NO; }
+     return YES;
+ }
++- (void)playTransientIntensity:(float)intensity sharpness:(float)sharpness {
++    if (!self.engine) return;
++    NSError *err = nil;
++    CHHapticEvent *ev = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient parameters:@[
++        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity],
++        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness]
++    ] relativeTime:0];
++    CHHapticPattern *pat = [[CHHapticPattern alloc] initWithEvents:@[ev] parameters:@[] error:&err];
++    id<CHHapticPatternPlayer> player = pat ? [self.engine createPlayerWithPattern:pat error:&err] : nil;
++    if (player) [player startAtTime:CHHapticTimeImmediate error:&err];
++}
++- (void)applyPhone:(const dm_vibration[2])motors {
++    dm_haptic_level level = {0, 0};
++    int fire = 0;
++    float t_int = 0, t_sharp = 0;
++    double last_t = self.lastTransientAt;
++    dm_haptics_apple_phone_synthesize(motors, gain, self.lastPhoneIntensity, now(), &last_t, &level, &fire, &t_int, &t_sharp);
++    if ([self applyLevel:level]) {
++        self.lastPhoneIntensity = level.intensity;
++        self.lastTransientAt = last_t;
++        if (fire) [self playTransientIntensity:t_int sharpness:t_sharp];
++    }
++}
+ - (void)apply:(dm_haptic_level)level {
++    (void)[self applyLevel:level];
++}
++- (BOOL)applyLevel:(dm_haptic_level)level {
+     if ([self.target hasPrefix:@"controller"]) level.intensity = dm_haptics_apple_controller_intensity(level.intensity);
+     uint64_t silence = ++self.silenceGeneration;
+     NSError *error = nil;
+     self.level = level;
+     if (!self.pattern) {
+-        if (level.intensity == 0) return;
++        if (level.intensity == 0) return YES;
+         if (now() < self.retryAfter) {
+             // Discard this effect, so an identical fresh send after the backoff is not deduplicated away.
+-            dm_haptics_clear(self.player); return;
++            dm_haptics_clear(self.player); return NO;
+         }
+-        if (![self startEngine]) return;
++        if (![self startEngine]) return NO;
+         if (!self.simple) {
+             CHHapticEvent *event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[
+                 [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1],
+@@ -193,19 +263,19 @@ static void report(NSError *e, NSString *target, const char *stage) {
+                 [self stop]; self.engine = nil;
+                 // Without advanced players, the engines of the left and right handles override each other on an Xbox Wireless Controller instead of
+                 // adding up: with both playing, the handle motors were not felt, while one engine for both handles was
+-                if (self.merge) { dm_haptics_clear(self.player); self.merge(); return; }
++                if (self.merge) { dm_haptics_clear(self.player); self.merge(); return NO; }
+                 self.simple = YES;
+-                if (![self startEngine]) return;
++                if (![self startEngine]) return NO;
+             }
+         }
+         if (self.simple) {
+             self.pulseEnd = 0;
+-            if (![self pulse:&error]) { [self failed:error stage:"start pulse"]; return; }
++            if (![self pulse:&error]) { [self failed:error stage:"start pulse"]; return NO; }
+         }
+-        if (!self.pattern) { [self failed:error stage:"create player"]; return; }
+-        if (!self.simple && ![self.pattern startAtTime:CHHapticTimeImmediate error:&error]) { [self failed:error stage:"start player"]; return; }
++        if (!self.pattern) { [self failed:error stage:"create player"]; return NO; }
++        if (!self.simple && ![self.pattern startAtTime:CHHapticTimeImmediate error:&error]) { [self failed:error stage:"start player"]; return NO; }
+     } else if (self.simple && level.intensity > 0 && self.pulseEnd <= self.engine.currentTime) {
+-        if (![self pulse:&error]) { [self failed:error stage:"start pulse"]; return; }   // the pulses ran out while the effect was silent
++        if (![self pulse:&error]) { [self failed:error stage:"start pulse"]; return NO; }   // the pulses ran out while the effect was silent
+     }
+     // Controls live outside the loop: the loop boundary never replays an initial intensity.
+     NSArray *parameters = @[
+@@ -214,7 +284,7 @@ static void report(NSError *e, NSString *target, const char *stage) {
+     ];
+     [self.previous sendParameters:parameters atTime:CHHapticTimeImmediate error:nil];   // still playing until the scheduled pulse starts
+     if (![self.pattern sendParameters:parameters atTime:CHHapticTimeImmediate error:&error]) {
+-        [self failed:error stage:"send parameters"]; return;
++        [self failed:error stage:"send parameters"]; return NO;
+     }
+     self.failures = 0;
+     if (!self.simple) ((id<CHHapticAdvancedPatternPlayer>)self.pattern).isMuted = NO;
+@@ -225,6 +295,7 @@ static void report(NSError *e, NSString *target, const char *stage) {
+             DmRumbleChannel *c = weak; if (c && c.silenceGeneration == silence) [c stop];
+         });
+     }
++    return YES;
+ }
+ @end
+ 
+@@ -332,9 +403,13 @@ static void apply(dm_haptic_state s) {
+ #endif
+         for (NSUInteger i = 0; i < out.count; i++) {
+             if (s.epoch != dm_haptics_epoch(s.player)) break;   // a failed channel may replace this route
+-            int m = out[i].motor;
+-            dm_haptic_level level = m >= 0 ? dm_haptics_level(&s.motor[m], 1, gain) : dm_haptics_level(s.motor, 2, gain);
+-            [out[i] apply:level];
++            if ([out[i].target isEqualToString:@"phone"]) {
++                [out[i] applyPhone:s.motor];
++            } else {
++                int m = out[i].motor;
++                dm_haptic_level level = m >= 0 ? dm_haptics_level(&s.motor[m], 1, gain) : dm_haptics_level(s.motor, 2, gain);
++                [out[i] apply:level];
++            }
+         }
+     } });
+ }
+diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
+index 14d284c..5826439 100644
+--- a/dm/host/hle_oe.c
++++ b/dm/host/hle_oe.c
+@@ -202,8 +202,13 @@ static int prog_plan_make(char *tsv, int index, prog_plan *out, const void *para
+ static void prog_exec(void *p) {
+     const prog_plan *P = p; char *argv[] = {(char *)P->exe, (char *)P->arg, NULL};
+     if (chdir(P->cwd)) LOG("[RED] oe::ExecuteProgram: cannot enter %s", P->cwd);
++#if !TARGET_OS_TV
+     execve(P->exe, argv, P->env);
+     LOG("[RED] oe::ExecuteProgram: cannot start %s (errno %d)", P->exe, errno);
++#else
++    (void)argv;
++    LOG("[RED] oe::ExecuteProgram: cannot start %s (unavailable on tvOS)", P->exe);
++#endif
+ }
+ static const char *prog_name(int index) {   // the profile's name of a program of this app (game.py header_multi), NULL when it has no such program
+ #ifdef DM_GAME_MULTI
+diff --git a/dm/host/stats_apple.h b/dm/host/stats_apple.h
+new file mode 100644
+index 0000000..9da6e8c
+--- /dev/null
++++ b/dm/host/stats_apple.h
+@@ -0,0 +1,30 @@
++// System telemetry for the in-game stats HUD (CPU/GPU die temp, device/controller battery, thermal state).
++#pragma once
++#include <stddef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++typedef struct {
++    double cpu_temp_c;       // NAN when unavailable (e.g., iOS/tvOS sandbox)
++    double gpu_temp_c;       // NAN when unavailable
++    int device_battery_pct;  // 0..100, -1 when unavailable (desktop Mac, tvOS, Simulator)
++    int device_charging;     // 1 charging, 0 not charging, -1 unknown
++    int pad_battery_pct;     // 0..100, -1 when no connected controller reports battery
++    int pad_charging;        // 1 charging, 0 not charging, -1 unknown
++    int thermal_state;       // NSProcessInfoThermalState: 0 nominal .. 3 critical, -1 unavailable
++} dm_stats_snapshot;
++
++void dm_stats_init(void);
++dm_stats_snapshot dm_stats_read(void);
++
++// Pure helpers (unit-tested in dm/host/tests/t_stats_apple.m)
++double dm_stats_temp_valid(double c);
++int dm_stats_smc_b62_prev(char c, char *prev);
++int dm_stats_smc_is_primary_reading(const char *const *keys, const double *vals, size_t count, size_t index);
++void dm_stats_format_hud(double fps, const dm_stats_snapshot *s, int compact, char *out, size_t cap);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/dm/host/stats_apple.m b/dm/host/stats_apple.m
+new file mode 100644
+index 0000000..eef2345
+--- /dev/null
++++ b/dm/host/stats_apple.m
+@@ -0,0 +1,366 @@
++// Honest Apple system telemetry: AppleSMC + IOPowerSources + IOHID (macOS), UIDevice + best-effort IOHID (iOS), GCController battery (all Apple platforms).
++#import "stats_apple.h"
++#import <Foundation/Foundation.h>
++#import <GameController/GameController.h>
++#include <TargetConditionals.h>
++#include <dlfcn.h>
++#include <math.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <string.h>
++
++#if TARGET_OS_IPHONE
++#import <UIKit/UIKit.h>
++#else
++#import <IOKit/IOKitLib.h>
++#import <IOKit/ps/IOPSKeys.h>
++#import <IOKit/ps/IOPowerSources.h>
++#endif
++
++double dm_stats_temp_valid(double c) {
++    return isfinite(c) && c > 0.0 && c < 130.0 ? c : NAN;
++}
++
++int dm_stats_smc_b62_prev(char c, char *prev) {
++    if (!prev) return 0;
++    if (c >= '1' && c <= '9') { *prev = (char)(c - 1); return 1; }
++    if (c == 'A') { *prev = '9'; return 1; }
++    if (c >= 'B' && c <= 'Z') { *prev = (char)(c - 1); return 1; }
++    if (c == 'a') { *prev = 'Z'; return 1; }
++    if (c >= 'b' && c <= 'z') { *prev = (char)(c - 1); return 1; }
++    return 0;
++}
++
++// M4 SMC exposes per-core triads (e.g. Tp00/01/02) and GPU pairs (Tg0C/0D) where the first key is the die temp and
++// each consecutive base-62 key carries a higher fan/TDP/peak offset (+4.6 to +19 C), sometimes immediately abutting
++// the next cluster (Tp0U..0f, Te0R..0X). A key inside Tp/Te/Tg whose immediate base-62 predecessor exists and sits
++// more than 2.5 C cooler is treated as a derivative offset/peak rather than a physical sensor.
++int dm_stats_smc_is_primary_reading(const char *const *keys, const double *vals, size_t count, size_t index) {
++    if (!keys || !vals || index >= count) return 0;
++    const char *k = keys[index];
++    if (!k || strlen(k) != 4 || !isfinite(dm_stats_temp_valid(vals[index]))) return 0;
++    if (k[0] == 'T' && (k[1] == 'p' || k[1] == 'e' || k[1] == 'g')) {
++        char p3 = 0;
++        if (dm_stats_smc_b62_prev(k[3], &p3)) {
++            char prev_key[5] = {k[0], k[1], k[2], p3, 0};
++            for (size_t j = 0; j < count; j++) {
++                if (keys[j] && strcmp(keys[j], prev_key) == 0 && isfinite(vals[j])) {
++                    if (vals[index] > vals[j] + 2.5) return 0;
++                    break;
++                }
++            }
++        }
++    }
++    return 1;
++}
++
++static void append_seg(char *buf, size_t cap, const char *seg) {
++    if (!buf || !cap || !seg || !*seg) return;
++    size_t len = strlen(buf);
++    if (len == 0) snprintf(buf, cap, "%s", seg);
++    else snprintf(buf + len, cap > len ? cap - len : 0, " \xC2\xB7 %s", seg);
++}
++
++void dm_stats_format_hud(double fps, const dm_stats_snapshot *s, int compact, char *out, size_t cap) {
++    if (!out || cap == 0) return;
++    out[0] = '\0';
++    dm_stats_snapshot empty = {NAN, NAN, -1, -1, -1, -1, -1};
++    if (!s) s = &empty;
++
++    char fps_s[32], cpu_s[32], gpu_s[32];
++    if (isfinite(fps) && fps >= 0.0) snprintf(fps_s, sizeof fps_s, "%lld fps", (long long)llround(fps));
++    else snprintf(fps_s, sizeof fps_s, "-- fps");
++
++    double ct = dm_stats_temp_valid(s->cpu_temp_c);
++    if (isfinite(ct)) snprintf(cpu_s, sizeof cpu_s, "CPU %lld\xC2\xB0" "C", (long long)llround(ct));
++    else snprintf(cpu_s, sizeof cpu_s, "CPU --\xC2\xB0" "C");
++
++    double gt = dm_stats_temp_valid(s->gpu_temp_c);
++    if (isfinite(gt)) snprintf(gpu_s, sizeof gpu_s, "GPU %lld\xC2\xB0" "C", (long long)llround(gt));
++    else snprintf(gpu_s, sizeof gpu_s, "GPU --\xC2\xB0" "C");
++
++    char bat_s[32] = {0}, pad_s[32] = {0}, heat_s[32] = {0};
++    if (s->device_battery_pct >= 0) {
++        int pct = s->device_battery_pct > 100 ? 100 : s->device_battery_pct;
++        snprintf(bat_s, sizeof bat_s, "Bat %d%%%s", pct, s->device_charging == 1 ? "+" : "");
++    }
++    if (s->pad_battery_pct >= 0) {
++        int pct = s->pad_battery_pct > 100 ? 100 : s->pad_battery_pct;
++        snprintf(pad_s, sizeof pad_s, "Mando %d%%%s", pct, s->pad_charging == 1 ? "+" : "");
++    }
++    if (s->thermal_state >= 2) {
++        snprintf(heat_s, sizeof heat_s, "%s", s->thermal_state >= 3 ? "Cr\xC3\xADtico" : "Calor");
++    }
++
++    if (compact) {
++        char line1[128] = {0}, line2[128] = {0};
++        append_seg(line1, sizeof line1, fps_s);
++        append_seg(line1, sizeof line1, cpu_s);
++        append_seg(line1, sizeof line1, gpu_s);
++        append_seg(line2, sizeof line2, bat_s);
++        append_seg(line2, sizeof line2, pad_s);
++        append_seg(line2, sizeof line2, heat_s);
++        if (line2[0]) snprintf(out, cap, "%s\n%s", line1, line2);
++        else snprintf(out, cap, "%s", line1);
++    } else {
++        append_seg(out, cap, fps_s);
++        append_seg(out, cap, cpu_s);
++        append_seg(out, cap, gpu_s);
++        append_seg(out, cap, bat_s);
++        append_seg(out, cap, pad_s);
++        append_seg(out, cap, heat_s);
++    }
++}
++
++#if !TARGET_OS_IPHONE
++
++typedef struct { char major, minor, build, reserved; uint16_t release; } smc_vers_t;
++typedef struct { uint16_t version, length; uint32_t cpu_plimit, gpu_plimit, mem_plimit; } smc_plimit_t;
++typedef struct { uint32_t data_size, data_type; uint8_t data_attrs; } smc_keyinfo_t;
++typedef struct {
++    uint32_t key;
++    smc_vers_t vers;
++    smc_plimit_t plimit;
++    smc_keyinfo_t key_info;
++    uint8_t result, status, data8;
++    uint32_t data32;
++    uint8_t bytes[32];
++} smc_keydata_t;
++
++typedef struct {
++    char name[5];
++    uint32_t code, size, type;
++} smc_sensor_t;
++
++static uint32_t smc_u32(const char *s) {
++    return ((uint32_t)(uint8_t)s[0] << 24) | ((uint32_t)(uint8_t)s[1] << 16) | ((uint32_t)(uint8_t)s[2] << 8) | (uint32_t)(uint8_t)s[3];
++}
++
++static void smc_str(uint32_t v, char out[5]) {
++    out[0] = (char)((v >> 24) & 0xff); out[1] = (char)((v >> 16) & 0xff);
++    out[2] = (char)((v >> 8) & 0xff); out[3] = (char)(v & 0xff); out[4] = '\0';
++}
++
++static int smc_call(io_connect_t conn, const smc_keydata_t *in, smc_keydata_t *out) {
++    size_t sz = sizeof *out;
++    memset(out, 0, sizeof *out);
++    return IOConnectCallStructMethod(conn, 2, in, sizeof *in, out, &sz) == KERN_SUCCESS && out->result == 0;
++}
++
++static double smc_decode(uint32_t dtype, uint32_t sz, const uint8_t *b) {
++    if (dtype == smc_u32("flt ") && sz == 4) { float f = 0; memcpy(&f, b, 4); return dm_stats_temp_valid(f); }
++    if (dtype == smc_u32("sp78") && sz == 2) { int16_t s = (int16_t)((b[0] << 8) | b[1]); return dm_stats_temp_valid(s / 256.0); }
++    if (dtype == smc_u32("fpe2") && sz == 2) { uint16_t u = (uint16_t)((b[0] << 8) | b[1]); return dm_stats_temp_valid(u / 4.0); }
++    return NAN;
++}
++
++static pthread_mutex_t g_smc_lock = PTHREAD_MUTEX_INITIALIZER;
++static smc_sensor_t g_smc_sensors[256];
++static size_t g_smc_count;
++static int g_smc_scanned;
++
++static void smc_scan(io_connect_t conn) {
++    if (g_smc_scanned) return;
++    g_smc_scanned = 1;
++    smc_keydata_t in = {0}, out = {0};
++    in.key = smc_u32("#KEY"); in.data8 = 9;
++    if (!smc_call(conn, &in, &out) || out.key_info.data_size != 4) return;
++    memset(&in, 0, sizeof in); in.key = smc_u32("#KEY"); in.key_info.data_size = 4; in.data8 = 5;
++    if (!smc_call(conn, &in, &out)) return;
++    uint32_t total = ((uint32_t)out.bytes[0] << 24) | ((uint32_t)out.bytes[1] << 16) | ((uint32_t)out.bytes[2] << 8) | out.bytes[3];
++    if (total > 8192) total = 8192;
++    for (uint32_t i = 0; i < total && g_smc_count < sizeof g_smc_sensors / sizeof g_smc_sensors[0]; i++) {
++        memset(&in, 0, sizeof in); in.data8 = 8; in.data32 = i;
++        if (!smc_call(conn, &in, &out)) continue;
++        uint32_t code = out.key;
++        char k[5]; smc_str(code, k);
++        if (k[0] != 'T' || (k[1] != 'p' && k[1] != 'e' && k[1] != 'g' && k[1] != 'C' && k[1] != 'G')) continue;
++        memset(&in, 0, sizeof in); in.key = code; in.data8 = 9;
++        if (!smc_call(conn, &in, &out) || out.key_info.data_size == 0 || out.key_info.data_size > 32) continue;
++        uint32_t dtype = out.key_info.data_type, dsize = out.key_info.data_size;
++        if (!((dtype == smc_u32("flt ") && dsize == 4) || ((dtype == smc_u32("sp78") || dtype == smc_u32("fpe2")) && dsize == 2))) continue;
++        smc_sensor_t *s = &g_smc_sensors[g_smc_count++];
++        memcpy(s->name, k, 5);
++        s->code = code;
++        s->size = dsize;
++        s->type = dtype;
++    }
++}
++
++static void read_smc_temps(double *cpu_out, double *gpu_out) {
++    *cpu_out = NAN; *gpu_out = NAN;
++    pthread_mutex_lock(&g_smc_lock);
++    io_service_t svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
++    io_connect_t conn = 0;
++    if (!svc || IOServiceOpen(svc, mach_task_self(), 0, &conn) != KERN_SUCCESS) {
++        if (svc) IOObjectRelease(svc);
++        pthread_mutex_unlock(&g_smc_lock);
++        return;
++    }
++    smc_scan(conn);
++    const char *keys[256] = {0};
++    double vals[256] = {0};
++    size_t n = 0;
++    for (size_t i = 0; i < g_smc_count; i++) {
++        smc_keydata_t in = {0}, out = {0};
++        in.key = g_smc_sensors[i].code; in.key_info.data_size = g_smc_sensors[i].size; in.data8 = 5;
++        if (!smc_call(conn, &in, &out)) continue;
++        double v = smc_decode(g_smc_sensors[i].type, g_smc_sensors[i].size, out.bytes);
++        if (isfinite(v)) { keys[n] = g_smc_sensors[i].name; vals[n] = v; n++; }
++    }
++    IOServiceClose(conn);
++    IOObjectRelease(svc);
++    pthread_mutex_unlock(&g_smc_lock);
++
++    double p_sum = 0, g_sum = 0, intel_c_sum = 0, intel_g_sum = 0;
++    int p_cnt = 0, g_cnt = 0, intel_c_cnt = 0, intel_g_cnt = 0;
++    for (size_t i = 0; i < n; i++) {
++        if (!dm_stats_smc_is_primary_reading(keys, vals, n, i)) continue;
++        char c1 = keys[i][1];
++        if (c1 == 'p' || c1 == 'e') { p_sum += vals[i]; p_cnt++; }
++        else if (c1 == 'g') { g_sum += vals[i]; g_cnt++; }
++        else if (c1 == 'C') { intel_c_sum += vals[i]; intel_c_cnt++; }
++        else if (c1 == 'G') { intel_g_sum += vals[i]; intel_g_cnt++; }
++    }
++    if (p_cnt > 0) *cpu_out = p_sum / p_cnt;
++    else if (intel_c_cnt > 0) *cpu_out = intel_c_sum / intel_c_cnt;
++    if (g_cnt > 0) *gpu_out = g_sum / g_cnt;
++    else if (intel_g_cnt > 0) *gpu_out = intel_g_sum / intel_g_cnt;
++}
++
++static void read_mac_battery(int *pct_out, int *chg_out) {
++    *pct_out = -1; *chg_out = -1;
++    CFTypeRef info = IOPSCopyPowerSourcesInfo();
++    CFArrayRef list = info ? IOPSCopyPowerSourcesList(info) : NULL;
++    for (CFIndex i = 0; list && i < CFArrayGetCount(list); i++) {
++        NSDictionary *d = (__bridge NSDictionary *)IOPSGetPowerSourceDescription(info, CFArrayGetValueAtIndex(list, i));
++        if (![d[@(kIOPSTypeKey)] isEqualToString:@(kIOPSInternalBatteryType)]) continue;
++        NSNumber *cur = d[@(kIOPSCurrentCapacityKey)], *max = d[@(kIOPSMaxCapacityKey)];
++        if (cur && max && max.doubleValue > 0.0) {
++            int pct = (int)llround(fmax(0.0, fmin(100.0, cur.doubleValue * 100.0 / max.doubleValue)));
++            *pct_out = pct;
++            NSNumber *chg = d[@(kIOPSIsChargingKey)];
++            *chg_out = chg ? (chg.boolValue ? 1 : 0) : -1;
++            break;
++        }
++    }
++    if (list) CFRelease(list);
++    if (info) CFRelease(info);
++}
++
++#endif
++
++#if !TARGET_OS_TV
++static void read_iohid_temps(double *cpu_out, double *gpu_out) {
++    *cpu_out = NAN; *gpu_out = NAN;
++    void *h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
++    if (!h) return;
++    typedef void *(*create_fn)(CFAllocatorRef);
++    typedef void (*match_fn)(void *, CFDictionaryRef);
++    typedef CFArrayRef (*services_fn)(void *);
++    typedef CFTypeRef (*prop_fn)(void *, CFStringRef);
++    typedef void *(*event_fn)(void *, int64_t, int32_t, int64_t);
++    typedef double (*float_fn)(void *, uint32_t);
++    create_fn cr = (create_fn)dlsym(h, "IOHIDEventSystemClientCreate");
++    match_fn sm = (match_fn)dlsym(h, "IOHIDEventSystemClientSetMatching");
++    services_fn cs = (services_fn)dlsym(h, "IOHIDEventSystemClientCopyServices");
++    prop_fn cp = (prop_fn)dlsym(h, "IOHIDServiceClientCopyProperty");
++    event_fn ce = (event_fn)dlsym(h, "IOHIDServiceClientCopyEvent");
++    float_fn gf = (float_fn)dlsym(h, "IOHIDEventGetFloatValue");
++    if (!cr || !sm || !cs || !cp || !ce || !gf) return;
++    void *sys = cr(kCFAllocatorDefault);
++    if (!sys) return;
++    sm(sys, (__bridge CFDictionaryRef)@{@"PrimaryUsagePage": @0xff00, @"PrimaryUsage": @5});
++    CFArrayRef arr = cs(sys);
++    double cpu_sum = 0, gpu_sum = 0, pmu_sum = 0;
++    int cpu_cnt = 0, gpu_cnt = 0, pmu_cnt = 0;
++    for (CFIndex i = 0; arr && i < CFArrayGetCount(arr); i++) {
++        void *s = (void *)CFArrayGetValueAtIndex(arr, i);
++        NSString *prod = (__bridge_transfer NSString *)cp(s, CFSTR("Product"));
++        if (!prod.length) continue;
++        void *ev = ce(s, 15, 0, 0);
++        double v = ev ? dm_stats_temp_valid(gf(ev, 15u << 16)) : NAN;
++        if (ev) CFRelease(ev);
++        if (!isfinite(v)) continue;
++        if ([prod containsString:@"pACC"] || [prod containsString:@"eACC"] || [prod containsString:@"CPU"]) { cpu_sum += v; cpu_cnt++; }
++        else if ([prod containsString:@"GPU"]) { gpu_sum += v; gpu_cnt++; }
++        else if ([prod hasPrefix:@"PMU tdie"]) { pmu_sum += v; pmu_cnt++; }
++    }
++    if (arr) CFRelease(arr);
++    CFRelease(sys);
++    if (cpu_cnt > 0) *cpu_out = cpu_sum / cpu_cnt;
++    else if (pmu_cnt > 0) *cpu_out = pmu_sum / pmu_cnt;
++    if (gpu_cnt > 0) *gpu_out = gpu_sum / gpu_cnt;
++}
++#endif
++
++#if TARGET_OS_IOS && !TARGET_OS_TV
++static _Atomic int g_ios_bat_pct = -1;
++static _Atomic int g_ios_bat_chg = -1;
++
++static void update_ios_battery(void) {
++    UIDevice *dev = UIDevice.currentDevice;
++    if (!dev.batteryMonitoringEnabled) dev.batteryMonitoringEnabled = YES;
++    UIDeviceBatteryState st = dev.batteryState;
++    float lvl = dev.batteryLevel;
++    if (st == UIDeviceBatteryStateUnknown || !isfinite(lvl) || lvl < 0.0f) {
++        g_ios_bat_pct = -1; g_ios_bat_chg = -1;
++        return;
++    }
++    g_ios_bat_pct = (int)llroundf(fmaxf(0.0f, fminf(1.0f, lvl)) * 100.0f);
++    g_ios_bat_chg = (st == UIDeviceBatteryStateCharging) ? 1 : 0;
++}
++#endif
++
++static void read_pad_battery(int *pct_out, int *chg_out) {
++    *pct_out = -1; *chg_out = -1;
++    GCController *pick = nil;
++    for (GCController *c in GCController.controllers) {
++        GCDeviceBattery *b = c.battery;
++        if (!b || b.batteryState == GCDeviceBatteryStateUnknown || !isfinite(b.batteryLevel) || b.batteryLevel < 0.0f) continue;
++        if (c.playerIndex == GCControllerPlayerIndex1) { pick = c; break; }
++        if (!pick) pick = c;
++    }
++    if (!pick) return;
++    GCDeviceBattery *b = pick.battery;
++    *pct_out = (int)llroundf(fmaxf(0.0f, fminf(1.0f, b.batteryLevel)) * 100.0f);
++    *chg_out = (b.batteryState == GCDeviceBatteryStateCharging) ? 1 : 0;
++}
++
++void dm_stats_init(void) {
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++#if TARGET_OS_IOS && !TARGET_OS_TV
++        void (^setup)(void) = ^{
++            UIDevice.currentDevice.batteryMonitoringEnabled = YES;
++            update_ios_battery();
++            NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
++            [nc addObserverForName:UIDeviceBatteryLevelDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; update_ios_battery(); }];
++            [nc addObserverForName:UIDeviceBatteryStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; update_ios_battery(); }];
++        };
++        if (NSThread.isMainThread) setup();
++        else dispatch_async(dispatch_get_main_queue(), setup);
++#endif
++    });
++}
++
++dm_stats_snapshot dm_stats_read(void) {
++    dm_stats_snapshot s = {NAN, NAN, -1, -1, -1, -1, (int)NSProcessInfo.processInfo.thermalState};
++#if !TARGET_OS_IPHONE
++    read_smc_temps(&s.cpu_temp_c, &s.gpu_temp_c);
++    if (!isfinite(s.cpu_temp_c) || !isfinite(s.gpu_temp_c)) {
++        double hc = NAN, hg = NAN;
++        read_iohid_temps(&hc, &hg);
++        if (!isfinite(s.cpu_temp_c)) s.cpu_temp_c = hc;
++        if (!isfinite(s.gpu_temp_c)) s.gpu_temp_c = hg;
++    }
++    read_mac_battery(&s.device_battery_pct, &s.device_charging);
++#elif !TARGET_OS_TV
++    read_iohid_temps(&s.cpu_temp_c, &s.gpu_temp_c);
++    if (NSThread.isMainThread) update_ios_battery();
++    s.device_battery_pct = g_ios_bat_pct;
++    s.device_charging = g_ios_bat_chg;
++#endif
++    read_pad_battery(&s.pad_battery_pct, &s.pad_charging);
++    return s;
++}
+diff --git a/dm/host/tests/Makefile b/dm/host/tests/Makefile
+index e3e3921..63bcc6e 100644
+--- a/dm/host/tests/Makefile
++++ b/dm/host/tests/Makefile
+@@ -12,7 +12,7 @@ QUIET = $(if $(findstring -fsanitize,$(SAN)),,2>/dev/null)
+ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
+ $(B)/t_fs $(B)/t_fs_case $(B)/t_fs_commit_list $(B)/t_fs_commit_list_tsan: ../romfs_image.h
+ GAME_H = ../gen/$(GAME)/game_profile.h
+-run: $(B)/t_net_eventfd $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_output_stream $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pollwait $(B)/t_pctl $(B)/t_sf $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple $(B)/t_cheats $(B)/t_pad_hid $(B)/t_input_map $(B)/t_launcher_contract $(B)/t_profile_runtime
++run: $(B)/t_net_eventfd $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_output_stream $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pollwait $(B)/t_pctl $(B)/t_sf $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple $(B)/t_stats_apple $(B)/t_cheats $(B)/t_pad_hid $(B)/t_input_map $(B)/t_launcher_contract $(B)/t_profile_runtime
+ 	$(B)/t_language
+ 	$(B)/t_heap_size
+ 	$(B)/t_touch
+@@ -72,6 +72,7 @@ run: $(B)/t_net_eventfd $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_to
+ 	$(B)/t_launcher_contract
+ 	$(B)/t_haptics
+ 	$(B)/t_haptics_apple
++	$(B)/t_stats_apple
+ 	TMPDIR="$(abspath $(B))" $(B)/t_cheats $(QUIET)
+ 	$(B)/t_nro
+ 	$(B)/t_symbols
+@@ -258,6 +259,8 @@ $(B)/t_haptics: t_haptics.c ../hle_haptics.c ../hle_haptics.h ../dm_input.h | $(
+ 	$(CLANG) -O1 -g -Wall -Werror -I.. -o $@ t_haptics.c ../hle_haptics.c
+ $(B)/t_haptics_apple: t_haptics_apple.m ../haptics_apple.m ../haptics_apple.h ../hle_haptics.c ../hle_haptics.h | $(B)
+ 	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -I.. -o $@ t_haptics_apple.m ../hle_haptics.c -framework Cocoa -framework GameController -framework CoreHaptics -framework IOKit
++$(B)/t_stats_apple: t_stats_apple.m ../stats_apple.m ../stats_apple.h | $(B)
++	$(CLANG) -O1 -g -fobjc-arc -Wall -Werror -fsanitize=address,undefined -I.. -o $@ t_stats_apple.m ../stats_apple.m -framework Foundation -framework GameController -framework IOKit
+ $(B)/t_time: t_time.c ../hle_time.c ../hle.h ../dm.h $(GAME_H) | $(B)
+ 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_time.c
+ $(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
+diff --git a/dm/host/tests/t_haptics_apple.m b/dm/host/tests/t_haptics_apple.m
+index 40fdeb7..c5ff847 100644
+--- a/dm/host/tests/t_haptics_apple.m
++++ b/dm/host/tests/t_haptics_apple.m
+@@ -91,6 +91,7 @@ static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t target, d
+ @property(copy) void (^resetHandler)(void);
+ @property(copy) void (^stoppedHandler)(CHHapticEngineStoppedReason);
+ @property TestPlayer *testPlayer;
++@property TestPlayer *advancedPlayer;
+ @property int starts, stops;
+ @property BOOL fail;
+ @property BOOL failPattern, failPlayer, failSend, handlersAtStart, resetDuringStart, noAdvanced, broken;
+@@ -115,6 +116,7 @@ static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t target, d
+         self.broken = YES; return nil;
+     }
+     self.testPlayer = [TestPlayer new]; self.testPlayer.failStart = self.failPlayer; self.testPlayer.failSend = self.failSend;
++    self.advancedPlayer = self.testPlayer;
+     return (id)self.testPlayer;
+ }
+ - (id<CHHapticPatternPlayer>)createPlayerWithPattern:(CHHapticPattern *)p error:(NSError **)e {
+@@ -498,6 +500,52 @@ int main(void) { @autoreleasepool {
+     assert(nativeStops && !outputOwners[0] && !nativeOutputs[0] && channels[0].count==1 && [controllerLocalities[0] isEqual:GCHapticsLocalityLeftHandle]);
+     dm_haptics_apple_controller(0, nil); dm_haptics_apple_controller(1, nil); drain();
+     assert(ds4_crc((const uint8_t *)"123456789", 9) == 0xCBF43926u);   // the report's CRC32 (IEEE, reflected)
++    // Phone Taptic Engine synthesis: LRA gamma, noise floor, dual-band sharpness, transient onsets and 35 ms debounce
++    {
++        dm_vibration silent[2] = {{0.01f, 160, 0, 320}, {0.01f, 160, 0, 320}};
++        dm_haptic_level lv = {0}; int fire = 0; float ti = 0, ts = 0; double lastT = 0;
++        dm_haptics_apple_phone_synthesize(silent, 1.0f, 0.0f, 10.0, &lastT, &lv, &fire, &ti, &ts);
++        assert(lv.intensity == 0.0f && lv.sharpness == 0.0f && fire == 0);   // below 0.015 noise floor
++
++        dm_vibration lowThump[2] = {{0.5f, 80, 0, 320}, {0.5f, 80, 0, 320}};
++        dm_haptics_apple_phone_synthesize(lowThump, 1.0f, 0.0f, 10.0, &lastT, &lv, &fire, &ti, &ts);
++        assert(fabsf(lv.intensity - powf(0.5f, 0.72f)) < 1e-5f);   // LRA gamma boosts low/mid textures (~0.607)
++        assert(lv.sharpness > 0.20f && lv.sharpness < 0.30f);      // 80 Hz in low band -> ~0.22
++        assert(fire == 1 && lastT == 10.0 && ti > lv.intensity && ts >= 0.45f);   // crisp onset transient
++
++        dm_vibration hiClick[2] = {{0, 160, 0.85f, 900}, {0, 160, 0.85f, 900}};
++        int fire2 = 0; float ti2 = 0, ts2 = 0; dm_haptic_level lv2 = {0};
++        dm_haptics_apple_phone_synthesize(hiClick, 1.0f, lv.intensity, 10.02, &lastT, &lv2, &fire2, &ti2, &ts2);
++        assert(lv2.sharpness > 0.85f && lv2.sharpness <= 1.0f);   // high band 900 Hz sits well above 0.48
++        assert(fire2 == 0 && lastT == 10.0);                       // debounced within 35 ms window
++
++        // Advancing >= 35 ms from 0 intensity fires a new transient on rising edge
++        dm_haptics_apple_phone_synthesize(hiClick, 1.0f, 0.0f, 10.04, &lastT, &lv2, &fire2, &ti2, &ts2);
++        assert(fire2 == 1 && lastT == 10.04 && ts2 == lv2.sharpness);
++
++        // Channel integration: @"phone" drives continuous advanced player + transient plain player on rising edges
++        TestEngine *phone = [TestEngine new];
++        dispatch_sync(queue, ^{
++            channels[0] = [NSMutableArray new];
++            add_engine(0, -1, @"phone", ^CHHapticEngine *(NSError **e) { (void)e; return (id)phone; });
++            dm_haptics_route(0, 1);
++        }); drain();
++        dm_vibration_update strike[] = {{0, 0, {0.4f, 120, 0.5f, 800}}, {0, 1, {0.4f, 120, 0.5f, 800}}};
++        dm_haptics_send(strike, 2); drain();
++        assert(phone.advancedPlayer != nil);
++        assert(phone.advancedPlayer.levels.lastObject.floatValue > 0.65f);
++        assert(phone.plainPlayers == 1);   // onset transient fired once
++        send_pair(0, 0);
++        advance(0.01);
++        dm_haptics_send(strike, 2); drain();
++        assert(phone.plainPlayers == 1);   // debounced (< 35 ms)
++        send_pair(0, 0);
++        advance(0.05);
++        dm_haptics_send(strike, 2); drain();
++        assert(phone.plainPlayers == 2);   // second onset after 35 ms cooldown
++        send_pair(0, 0);
++        dm_haptics_route(0, 0); drain();
++    }
+     dm_haptics_apple_shutdown();
+-    puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, level cutoff and the DualShock 4 route passed");
++    puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, level cutoff, DualShock 4 and iPhone Taptic Engine passed");
+ } }
+diff --git a/dm/host/tests/t_stats_apple.m b/dm/host/tests/t_stats_apple.m
+new file mode 100644
+index 0000000..961bda0
+--- /dev/null
++++ b/dm/host/tests/t_stats_apple.m
+@@ -0,0 +1,143 @@
++// Unit tests for Apple telemetry helpers and macOS sensor snapshot reading (stats_apple.h).
++#import "../stats_apple.h"
++#import <Foundation/Foundation.h>
++#include <assert.h>
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++
++static void test_temp_valid(void) {
++    assert(dm_stats_temp_valid(45.5) == 45.5);
++    assert(dm_stats_temp_valid(0.1) == 0.1);
++    assert(dm_stats_temp_valid(129.9) == 129.9);
++    assert(isnan(dm_stats_temp_valid(0.0)));
++    assert(isnan(dm_stats_temp_valid(-5.0)));
++    assert(isnan(dm_stats_temp_valid(130.0)));
++    assert(isnan(dm_stats_temp_valid(250.0)));
++    assert(isnan(dm_stats_temp_valid(NAN)));
++    assert(isnan(dm_stats_temp_valid(INFINITY)));
++}
++
++static void test_b62_prev(void) {
++    char p = 0;
++    assert(dm_stats_smc_b62_prev('0', &p) == 0);
++    assert(dm_stats_smc_b62_prev('1', &p) == 1 && p == '0');
++    assert(dm_stats_smc_b62_prev('9', &p) == 1 && p == '8');
++    assert(dm_stats_smc_b62_prev('A', &p) == 1 && p == '9');
++    assert(dm_stats_smc_b62_prev('B', &p) == 1 && p == 'A');
++    assert(dm_stats_smc_b62_prev('Z', &p) == 1 && p == 'Y');
++    assert(dm_stats_smc_b62_prev('a', &p) == 1 && p == 'Z');
++    assert(dm_stats_smc_b62_prev('b', &p) == 1 && p == 'a');
++    assert(dm_stats_smc_b62_prev('z', &p) == 1 && p == 'y');
++    assert(dm_stats_smc_b62_prev('?', &p) == 0);
++    assert(dm_stats_smc_b62_prev('1', NULL) == 0);
++}
++
++static void test_smc_primary_reading(void) {
++    // M4-style contiguous clusters (Tp0U/V/W then immediately Tp0X/Y/Z, Te0R/S/T then Te0U, GPU Tg0C/D, plus M1 stride-4 Tp01/05/09)
++    const char *keys[] = {
++        "Tp00", "Tp01", "Tp02",
++        "Tp0U", "Tp0V", "Tp0W",
++        "Tp0X", "Tp0Y", "Tp0Z",
++        "Te0R", "Te0S", "Te0T",
++        "Te0U",
++        "Tg0C", "Tg0D",
++        "Tp05", "Tp09",
++        "TC0P", "TG0B"
++    };
++    const double vals[] = {
++        50.6, 57.7, 69.1,
++        51.0, 58.2, 75.9,
++        52.3, 59.0, 70.4,
++        49.5, 53.0, 56.2,
++        51.1,
++        43.6, 48.2,
++        52.0, 51.5,
++        48.0, NAN
++    };
++    const size_t n = sizeof keys / sizeof keys[0];
++
++    // Primary readings: cluster heads, M1 stride-4 without immediate prev, Intel CPU, plus Tp0X/Te0U despite adjacent prev Tp0W/Te0T
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 0) == 1);  // Tp00
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 1) == 0);  // Tp01 (> Tp00 + 2.5)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 2) == 0);  // Tp02 (> Tp01 + 2.5)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 3) == 1);  // Tp0U (no Tp0T present)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 4) == 0);  // Tp0V
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 5) == 0);  // Tp0W
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 6) == 1);  // Tp0X (52.3 <= 75.9 + 2.5 -> next physical core)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 7) == 0);  // Tp0Y
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 8) == 0);  // Tp0Z
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 9) == 1);  // Te0R
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 10) == 0); // Te0S
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 11) == 0); // Te0T
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 12) == 1); // Te0U (51.1 <= 56.2 + 2.5 -> next physical core)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 13) == 1); // Tg0C
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 14) == 0); // Tg0D
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 15) == 1); // Tp05 (no Tp04 present)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 16) == 1); // Tp09 (no Tp08 present)
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 17) == 1); // TC0P
++    assert(dm_stats_smc_is_primary_reading(keys, vals, n, 18) == 0); // TG0B (NAN)
++}
++
++static void test_format_hud(void) {
++    char buf[256];
++
++    dm_stats_snapshot full = {
++        .cpu_temp_c = 61.6, .gpu_temp_c = 54.4,
++        .device_battery_pct = 82, .device_charging = 1,
++        .pad_battery_pct = 90, .pad_charging = 0,
++        .thermal_state = 1,
++    };
++    dm_stats_format_hud(60.0, &full, 0, buf, sizeof buf);
++    assert(strcmp(buf, "60 fps · CPU 62°C · GPU 54°C · Bat 82%+ · Mando 90%") == 0);
++
++    dm_stats_format_hud(59.6, &full, 1, buf, sizeof buf);
++    assert(strcmp(buf, "60 fps · CPU 62°C · GPU 54°C\nBat 82%+ · Mando 90%") == 0);
++
++    // iOS/tvOS sandbox: unavailable sensors must stay "--°C" and absent batteries must be omitted
++    dm_stats_snapshot ios_blocked = {
++        .cpu_temp_c = NAN, .gpu_temp_c = NAN,
++        .device_battery_pct = 75, .device_charging = 0,
++        .pad_battery_pct = -1, .pad_charging = -1,
++        .thermal_state = 2,
++    };
++    dm_stats_format_hud(30.0, &ios_blocked, 1, buf, sizeof buf);
++    assert(strcmp(buf, "30 fps · CPU --°C · GPU --°C\nBat 75% · Calor") == 0);
++
++    // Critical thermal + no battery (tvOS / desktop Mac), unknown FPS
++    dm_stats_snapshot tv_hot = {
++        .cpu_temp_c = NAN, .gpu_temp_c = NAN,
++        .device_battery_pct = -1, .device_charging = -1,
++        .pad_battery_pct = 40, .pad_charging = 1,
++        .thermal_state = 3,
++    };
++    dm_stats_format_hud(NAN, &tv_hot, 0, buf, sizeof buf);
++    assert(strcmp(buf, "-- fps · CPU --°C · GPU --°C · Mando 40%+ · Crítico") == 0);
++
++    // Compact with neither battery nor elevated thermal drops the second line cleanly
++    dm_stats_snapshot minimal = {NAN, NAN, -1, -1, -1, -1, 0};
++    dm_stats_format_hud(60.0, &minimal, 1, buf, sizeof buf);
++    assert(strcmp(buf, "60 fps · CPU --°C · GPU --°C") == 0);
++}
++
++static void test_live_mac_snapshot(void) {
++    dm_stats_init();
++    dm_stats_snapshot s = dm_stats_read();
++    // On Apple Silicon Macs running this suite, SMC or IOHID reports valid temps in (0, 130) C
++    if (isfinite(s.cpu_temp_c)) assert(s.cpu_temp_c > 5.0 && s.cpu_temp_c < 120.0);
++    if (isfinite(s.gpu_temp_c)) assert(s.gpu_temp_c > 5.0 && s.gpu_temp_c < 120.0);
++    assert(s.device_battery_pct == -1 || (s.device_battery_pct >= 0 && s.device_battery_pct <= 100));
++    assert(s.pad_battery_pct == -1 || (s.pad_battery_pct >= 0 && s.pad_battery_pct <= 100));
++    assert(s.thermal_state >= 0 && s.thermal_state <= 3);
++    printf("t_stats_apple OK (cpu=%.1f gpu=%.1f bat=%d pad=%d thermal=%d)\n",
++           s.cpu_temp_c, s.gpu_temp_c, s.device_battery_pct, s.pad_battery_pct, s.thermal_state);
++}
++
++int main(void) { @autoreleasepool {
++    test_temp_valid();
++    test_b62_prev();
++    test_smc_primary_reading();
++    test_format_hud();
++    test_live_mac_snapshot();
++    return 0;
++} }
+diff --git a/dm/host/web_apple.m b/dm/host/web_apple.m
+index 85ba613..7e1f675 100644
+--- a/dm/host/web_apple.m
++++ b/dm/host/web_apple.m
+@@ -12,10 +12,9 @@
+ #if TARGET_OS_TV
+ #include <stddef.h>
+ #include "front.h"
+-int front_web_open(const char *doc_dir, const char *page, const char *query, const char *callback_prefix, void (*on_msg)(const char *, size_t), void (*on_end)(int)) {
+-    (void)doc_dir; (void)page; (void)query; (void)callback_prefix; (void)on_msg;
+-    if (on_end) on_end(1);
+-    return 0;
++int front_web_open(const char *dir, const char *path, const char *callback, int hidden, const dm_web_opts *opts) {
++    (void)dir; (void)path; (void)callback; (void)hidden; (void)opts;
++    return -1;
+ }
+ void front_web_show(void) {}
+ void front_web_send(const char *msg, size_t n) { (void)msg; (void)n; }
+diff --git a/dm/ios/Sources/DmGamepad.m b/dm/ios/Sources/DmGamepad.m
+index c740b6e..8195128 100644
+--- a/dm/ios/Sources/DmGamepad.m
++++ b/dm/ios/Sources/DmGamepad.m
+@@ -277,11 +277,11 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }
+     [self reset];
+     _full = l == 1; _tap = l == 2;
+     [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
+-    [self applyLayout]; [self setNeedsLayout];
++    [self applyLayout]; [self setNeedsLayout]; [self.superview setNeedsLayout];
+ }
+ - (void)opmodeChanged {   // docked: the Tap layout goes (the game reads no touch screen then), unsaved, so handheld mode at the next start brings it back
+     if (!_tap || dm_opmode() == 0) return;
+-    [self reset]; _tap = NO; _full = NO; [self applyLayout]; [self setNeedsLayout];
++    [self reset]; _tap = NO; _full = NO; [self applyLayout]; [self setNeedsLayout]; [self.superview setNeedsLayout];
+ }
+ - (void)setTouchFeedback:(BOOL)on {
+ #if TARGET_OS_TV
+@@ -732,7 +732,65 @@ static void bind_siri_remote_fallback(BOOL hasExtended) {
+     bind_siri_remote_fallback(any);
+     any = YES;
+ #endif
+-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; [self updateControlVisibility]; [self reset]; front_ios_quit_controllers(); });   // the touch gamepad hides while any controller is in use
++    dispatch_async(dispatch_get_main_queue(), ^{
++        BOOL changed = self->_padOff != any;
++        self->_padOff = any;
++        [self updateControlVisibility];
++        [self reset];
++        front_ios_quit_controllers();
++        if (changed) [self.superview setNeedsLayout];
++    });   // the touch gamepad hides while any controller is in use
++}
++
++- (void)hudSlotWithSafeInsets:(UIEdgeInsets)insets layout:(DmLayout)layout compact:(BOOL *)compactOut slot:(CGRect *)slotOut midY:(CGFloat *)midYOut {
++    CGRect bounds = self.bounds;
++    UIEdgeInsets gameInsets = dm_game_safe_insets(bounds, insets, layout.topSafeOnly);
++    CGRect topSafe = UIEdgeInsetsInsetRect(bounds, gameInsets);
++    BOOL padOff = _padOff;
++#if TARGET_OS_TV
++    padOff = YES;
++#endif
++    if (TARGET_OS_TV || (layout.separated && !layout.onTV)) {
++        if (compactOut) *compactOut = NO;
++        if (midYOut) *midYOut = -1;
++        if (slotOut) *slotOut = CGRectMake(CGRectGetMinX(topSafe) + 10, CGRectGetMinY(topSafe) + 8, MAX(0, CGRectGetWidth(topSafe) - 20), MAX(0, CGRectGetHeight(topSafe) - 16));
++        return;
++    }
++    DmPadGeo g = dm_pad_geo(bounds, insets, layout, _full, _opts);
++    if (padOff || _tap) {
++        CGFloat minX = CGRectGetMinX(g.safe) + 10;
++        BOOL menuVisible = !(padOff && layout.onTV);
++        CGFloat maxX = menuVisible ? g.swap.x - g.swapR - 10 : CGRectGetMaxX(g.safe) - 10;
++        if (compactOut) *compactOut = NO;
++        if (midYOut) *midYOut = menuVisible ? g.swap.y : -1;
++        if (slotOut) *slotOut = CGRectMake(minX, CGRectGetMinY(g.safe) + 4, MAX(0, maxX - minX), MAX(0, CGRectGetHeight(g.safe) - 8));
++        return;
++    }
++    CGFloat minX = CGRectGetMinX(g.safe) + MAX(g.drop[DM_PAD_ZL].x + g.dropR[DM_PAD_ZL] - CGRectGetMinX(g.safe),
++                                              _full ? g.click[0].x + g.clickR - CGRectGetMinX(g.safe) : 0) + 6;
++    CGFloat maxX = MIN(CGRectGetMinX(g.pill[DM_PAD_MINUS]), g.swap.x - g.swapR) - 6;
++    DmPadShape shapes[20]; int n = dm_pad_shapes(&g, _full, shapes);
++    CGFloat rowBottom = CGRectGetMinY(g.safe) + 60 * g.u;
++    for (int i = 0; i < n; i++) {
++        if (shapes[i].id == DM_PAD_SHAPE_SWAP || (shapes[i].id >= DM_PAD_SHAPE_PILL && shapes[i].id < DM_PAD_SHAPE_PILL + 2)) continue;
++        if (shapes[i].id >= DM_PAD_SHAPE_DROP + DM_PAD_ZR && shapes[i].id <= DM_PAD_SHAPE_TIP + DM_PAD_R) continue;
++        if (shapes[i].id == DM_PAD_SHAPE_CLICK + 1) continue;
++        CGRect sb = dm_pad_shape_box(&shapes[i]);
++        if (CGRectGetMinY(sb) >= rowBottom) continue;
++        if (CGRectGetMidX(sb) < g.swap.x - 40 * g.u) minX = MAX(minX, CGRectGetMaxX(sb) + 6);
++        else maxX = MIN(maxX, CGRectGetMinX(sb) - 6);
++    }
++    CGFloat y = CGRectGetMinY(g.safe) + 2;
++    CGFloat midY = g.swap.y;
++    if (maxX - minX < 80) {
++        minX = CGRectGetMinX(g.safe) + 8;
++        maxX = MAX(minX + 80, g.swap.x - g.swapR - 8);
++        y = rowBottom + 4;
++        midY = -1;
++    }
++    if (compactOut) *compactOut = YES;
++    if (midYOut) *midYOut = midY;
++    if (slotOut) *slotOut = CGRectMake(minX, y, MAX(0, maxX - minX), MAX(0, CGRectGetMaxY(g.safe) - y));
+ }
+ @end
+ 
+@@ -833,6 +891,9 @@ int front_ctrl_support(int min, int max) {
+ 
+ UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
+ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arrange:layout]; }
++void dm_gamepad_hud_slot(UIView *view, UIEdgeInsets insets, DmLayout layout, BOOL *compactOut, CGRect *slotOut, CGFloat *midYOut) {
++    [(DmGamepad *)view hudSlotWithSafeInsets:insets layout:layout compact:compactOut slot:slotOut midY:midYOut];
++}
+ void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
+ void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
+ int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+index de5948e..ef1a0f6 100644
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -12,6 +12,7 @@
+ #include "hle.h"
+ #include "dm.h"
+ #include "haptics_apple.h"
++#include "stats_apple.h"
+ #include "save_sync.h"
+ #include "home_quit.h"
+ #import <GameController/GameController.h>
+@@ -22,7 +23,9 @@ void dm_gamepad_active(void);
+ void dm_gamepad_pads_read(void);
+ static void quit_close(void);
+ #import "DmLayout.h"
++#import "DmPadGeometry.h"
+ #import "DmGameMenu.h"
++void dm_gamepad_hud_slot(UIView *view, UIEdgeInsets insets, DmLayout layout, BOOL *compactOut, CGRect *slotOut, CGFloat *midYOut);
+ 
+ void front_ios_boot(void);
+ int front_ios_boot_ok(void);
+@@ -37,6 +40,7 @@ static void front_ios_notify_ask(void);
+ static void front_ios_power_watch(void);
+ static void front_ios_audio_watch(void);
+ static UILabel *front_ios_fps_label(void);
++uint64_t mtl_present_count(void);
+ 
+ @interface DmGameView : UIView
+ @property (nonatomic) CGFloat maxPixelWidth;   // 0: the screen's own pixels; a TV caps the drawable at 1920 across (tv_attach)
+@@ -92,6 +96,13 @@ static void tv_attach(void);
+ @property (nonatomic, strong) DmGameView *game;
+ @property (nonatomic, strong) UIView *pad;
+ @property (nonatomic, strong) UILabel *fps;
++@property (nonatomic, strong) NSTimer *fpsTimer;
++@property (nonatomic) uint64_t fpsCount0;
++@property (nonatomic) double fpsTime0;
++@property (nonatomic) double lastFPS;
++@property (nonatomic) BOOL fpsCompact;
++@property (nonatomic) DmLayout lastLayout;
++@property (nonatomic) BOOL hasLastLayout;
+ @property (nonatomic) BOOL launched;
+ @property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
+ @property (nonatomic) BOOL fill;   // DM_PICTURE_FIT=fill: in landscape the picture covers the screen, its edges cropped (DmLayout.h dm_layout_picture)
+@@ -198,6 +209,7 @@ static void launcher_done(void) { [g_root startGame]; }
+     g_layer = (CAMetalLayer *)self.game.layer;
+     if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) { g_layer.developerHUDProperties = @{@"mode": @"default"}; LOG("front end: Metal performance HUD on (DM_METAL_HUD)"); }   // Apple's HUD over the game: frame rate, frame and GPU time, memory
+     else if (getenv("DM_HUD_PER_LAYER")) { g_layer.developerHUDProperties = @{@"mode": @"disabled"}; LOG("front end: Metal performance HUD off (DM_METAL_HUD)"); }   // the shell turns Metal's HUD on for every start (ShellMain.m)
++    dm_stats_init();
+     dm_haptics_apple_init();
+     self.pad = dm_gamepad_view(self.view.bounds);
+     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+@@ -239,15 +251,76 @@ static void launcher_done(void) { [g_root startGame]; }
+     if (![line isEqualToString:self.layoutLog]) { self.layoutLog = line; LOG("front end: layout %s", line.UTF8String); }
+     self.pad.frame = b;
+     dm_gamepad_arrange(self.pad, layout);
+-    if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
+-        CGRect s = CGRectIntersection(layout.controls, UIEdgeInsetsInsetRect(b, gameInsets));
+-        CGFloat u = layout.separated ? MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3) : MIN(b.size.height / 430.0, 1.3);
+-        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
++    self.lastLayout = layout;
++    self.hasLastLayout = YES;
++    if (self.fps) {
++        BOOL compact = NO; CGRect slot = CGRectZero; CGFloat midY = -1;
++        dm_gamepad_hud_slot(self.pad, self.view.safeAreaInsets, layout, &compact, &slot, &midY);
++        if (compact != self.fpsCompact || !self.fps.text.length) {
++            self.fpsCompact = compact;
++            char buf[256];
++            dm_stats_snapshot snap = dm_stats_read();
++            dm_stats_format_hud(self.lastFPS, &snap, compact ? 1 : 0, buf, sizeof buf);
++            self.fps.text = @(buf);
++        }
++        CGFloat maxW = MAX(80, CGRectGetWidth(slot));
++        CGFloat fs = TARGET_OS_TV ? 14.0 : (compact ? (maxW < 180 ? 10.0 : 10.5) : 12.0);
++        self.fps.font = [UIFont monospacedDigitSystemFontOfSize:fs weight:UIFontWeightSemibold];
++        self.fps.numberOfLines = 0;
++        self.fps.textAlignment = compact ? NSTextAlignmentCenter : NSTextAlignmentLeft;
++        CGSize fit = [self.fps sizeThatFits:CGSizeMake(maxW, CGFLOAT_MAX)];
++        CGFloat w = MIN(ceil(fit.width), maxW), h = ceil(fit.height);
++        CGFloat x = compact ? floor(CGRectGetMidX(slot) - w / 2) : floor(CGRectGetMinX(slot));
++        x = fmax(CGRectGetMinX(slot), fmin(x, CGRectGetMaxX(slot) - w));
++        CGFloat y = midY >= 0 ? floor(midY - h / 2) : floor(CGRectGetMinY(slot));
++        y = fmax(CGRectGetMinY(slot), fmin(y, CGRectGetMaxY(slot) - h));
++        self.fps.frame = CGRectMake(x, y, w, h);
++    }
++}
++- (void)updateStatsHUDText {
++    if (!self.fps) return;
++    BOOL compact = NO;
++    if (self.pad && self.hasLastLayout) dm_gamepad_hud_slot(self.pad, self.view.safeAreaInsets, self.lastLayout, &compact, NULL, NULL);
++    else compact = !TARGET_OS_TV && ![[self.pad valueForKey:@"padOff"] boolValue];
++    BOOL compactChanged = compact != self.fpsCompact;
++    self.fpsCompact = compact;
++    char buf[256];
++    dm_stats_snapshot snap = dm_stats_read();
++    dm_stats_format_hud(self.lastFPS, &snap, compact ? 1 : 0, buf, sizeof buf);
++    NSString *next = @(buf);
++    if (compactChanged || ![self.fps.text isEqualToString:next]) {
++        self.fps.text = next;
++        [self.view setNeedsLayout];
+     }
+ }
+-- (void)showFPS:(BOOL)on {   // the frame-rate counter: DM_SHOW_FPS at Play, then the in-game menu
+-    if (on && !self.fps) { self.fps = front_ios_fps_label(); [self.view addSubview:self.fps]; [self.view setNeedsLayout]; }   // above the pad, which hides while a controller is connected
++- (void)showFPS:(BOOL)on {   // the stats HUD: DM_SHOW_FPS at Play, then the in-game menu
++    if (on && !self.fps) {
++        self.fps = front_ios_fps_label();
++        self.lastFPS = NAN;
++        [self.view addSubview:self.fps];   // above the pad, which hides while a controller is connected
++    }
+     self.fps.hidden = !on;
++    if (on) {
++        self.fpsCount0 = mtl_present_count();
++        self.fpsTime0 = CACurrentMediaTime();
++        [self updateStatsHUDText];
++        [self.view setNeedsLayout];
++        if (!self.fpsTimer.isValid) {
++            __weak DmRootVC *weak = self;
++            self.fpsTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
++                (void)t; DmRootVC *s = weak;
++                if (!s || !s.fps || s.fps.hidden) return;
++                uint64_t n = mtl_present_count(); double now = CACurrentMediaTime(), dt = now - s.fpsTime0;
++                if (dt > 0.25 && dt < 1.5) s.lastFPS = (double)(n - s.fpsCount0) / dt;   // a longer span is time in the background: no reading
++                else s.lastFPS = NAN;
++                s.fpsCount0 = n; s.fpsTime0 = now;
++                [s updateStatsHUDText];
++            }];
++        }
++    } else {
++        [self.fpsTimer invalidate];
++        self.fpsTimer = nil;
++    }
+ }
+ - (void)viewDidAppear:(BOOL)a {
+     [super viewDidAppear:a];
+@@ -370,18 +443,28 @@ static void front_ios_power_watch(void) {
+ // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
+ // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 (the launcher, Documents/env.txt) overrides that without a rebuild,
+ // and the in-game menu turns it on and off ([DmRootVC showFPS:])
+-uint64_t mtl_present_count(void);
++@interface DmHudLabel : UILabel
++@property (nonatomic) UIEdgeInsets textInsets;
++@end
++@implementation DmHudLabel
++- (void)drawTextInRect:(CGRect)rect { [super drawTextInRect:UIEdgeInsetsInsetRect(rect, self.textInsets)]; }
++- (CGSize)sizeThatFits:(CGSize)size {
++    UIEdgeInsets i = self.textInsets;
++    CGSize inner = CGSizeMake(MAX(0, size.width - i.left - i.right), MAX(0, size.height - i.top - i.bottom));
++    CGSize fit = [super sizeThatFits:inner];
++    return CGSizeMake(ceil(fit.width) + i.left + i.right, ceil(fit.height) + i.top + i.bottom);
++}
++@end
+ static UILabel *front_ios_fps_label(void) {
+-    UILabel *l = [UILabel new];
+-    l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
+-    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
+-    l.text = @"-- fps";
+-    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
+-    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+-        (void)t; uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
+-        if (now - t0 < 1.5) l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];   // a longer span is the time in the background: no reading
+-        n0 = n; t0 = now;
+-    }];
++    DmHudLabel *l = [DmHudLabel new];
++    l.textInsets = UIEdgeInsetsMake(4, 8, 4, 8);
++    l.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor;
++    l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter;
++    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.55]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
++    char buf[256];
++    dm_stats_snapshot snap = dm_stats_read();
++    dm_stats_format_hud(NAN, &snap, !TARGET_OS_TV, buf, sizeof buf);
++    l.text = @(buf);
+     LOG("front end: frame-rate counter on");
+     return l;
+ }
+diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
+index 60c915c..3472123 100644
+--- a/dm/ios/Sources/main.m
++++ b/dm/ios/Sources/main.m
+@@ -2,6 +2,7 @@
+ // The game files (RomFS) ship inside the App at <App>/romfs; Documents/romfs.img (one image, scripts/push_romfs.sh; its name in any letter case) or a Documents/romfs folder is also accepted (lets you swap them without reinstalling). The DLC folder aoc/ likewise: Documents/aoc, else <App>/aoc.
+ #import <UIKit/UIKit.h>
+ #import <Metal/Metal.h>
++#include <TargetConditionals.h>
+ #include <pthread.h>
+ #include <signal.h>
+ #include <stdio.h>
+@@ -368,7 +369,9 @@ static int g_boot_ok;
+ 
+ static void *boot_thread(void *p) {
+     (void)p;
++#if !TARGET_OS_TV
+     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
++#endif
+     int rc = dm_main(g_argc, g_argv);
+     fprintf(stderr, "boot: dm_main returned %d\n", rc);
+     return NULL;
+diff --git a/dm/ios/tests/duo/Sources/DuoRuntimeStubs.m b/dm/ios/tests/duo/Sources/DuoRuntimeStubs.m
+index 418d0ec..f594455 100644
+--- a/dm/ios/tests/duo/Sources/DuoRuntimeStubs.m
++++ b/dm/ios/tests/duo/Sources/DuoRuntimeStubs.m
+@@ -71,6 +71,12 @@ void dm_pad_players(uint32_t mask) {
+     g_state.connected_players = mask;
+     pthread_mutex_unlock(&g_input_lock);
+ }
++int dm_players_reported(void) {
++    pthread_mutex_lock(&g_input_lock);
++    int count = __builtin_popcount(g_state.connected_players);
++    pthread_mutex_unlock(&g_input_lock);
++    return count > 0 ? count : 1;
++}
+ 
+ void dm_motion_set(int player, const float acceleration[3], const float rotation[3]) {
+     if (player < 0 || player >= DM_PLAYERS || !acceleration || !rotation) return;
+diff --git a/dm/ios/tests/duo/Tests/DuoHarnessTests.m b/dm/ios/tests/duo/Tests/DuoHarnessTests.m
+index 1241c54..83c4916 100644
+--- a/dm/ios/tests/duo/Tests/DuoHarnessTests.m
++++ b/dm/ios/tests/duo/Tests/DuoHarnessTests.m
+@@ -713,8 +713,14 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
+     dm_setting_live("DM_OPMODE", "1"); XCTAssertEqual(dm_opmode(), 1);
+     dm_setting_live("DM_OPMODE", "0"); XCTAssertEqual(dm_opmode(), 0);
+     dm_setting_live("DM_SHOW_FPS", "1");
++    [root.view layoutIfNeeded];
+     UILabel *fps = [root valueForKey:@"fps"];
+     XCTAssertNotNil(fps); XCTAssertFalse(fps.hidden);
++    XCTAssertTrue([fps.text containsString:@"fps"]);
++    XCTAssertTrue([fps.text containsString:@"CPU"]);
++    XCTAssertTrue([fps.text containsString:@"GPU"]);
++    XCTAssertTrue(CGRectContainsRect(root.view.bounds, fps.frame), @"HUD fits inside view bounds: %@", NSStringFromCGRect(fps.frame));
++    XCTAssertGreaterThan(fps.frame.size.width, 80);
+     dm_setting_live("DM_SHOW_FPS", "0"); XCTAssertTrue(fps.hidden);
+ }
+ 
+@@ -1250,6 +1256,9 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
+     UIViewController *root = [self harnessRootViewController];
+     UIView *game = [root valueForKey:@"game"], *pad = [root valueForKey:@"pad"];
+     UIButton *menu = [self menuButtonInPad:pad];
++    NSPredicate *touchControlsActive = [NSPredicate predicateWithFormat:@"padOff == NO"];
++    XCTNSPredicateExpectation *ready = [[XCTNSPredicateExpectation alloc] initWithPredicate:touchControlsActive object:pad];
++    XCTAssertEqual([XCTWaiter waitForExpectations:@[ready] timeout:5.0], XCTWaiterResultCompleted);
+     UIView *tv = [[UIView alloc] initWithFrame:root.view.bounds];
+     GCController *controller = [GCController controllerWithExtendedGamepad];
+     @try {
+diff --git a/dm/ios/tests/duo/project.yml b/dm/ios/tests/duo/project.yml
+index de17721..8b4560b 100644
+--- a/dm/ios/tests/duo/project.yml
++++ b/dm/ios/tests/duo/project.yml
+@@ -13,6 +13,7 @@ targets:
+       - path: ../../Sources/LauncherSettings.swift
+       - path: ../../Sources/DmGamepad.m
+       - path: ../../Sources/front_ios.m
++      - path: ../../../host/stats_apple.m
+     dependencies:
+       - sdk: UIKit.framework
+       - sdk: GameController.framework
+diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
+index 5274b47..651368f 100755
+--- a/dm/ios/tools/build_ipa.sh
++++ b/dm/ios/tools/build_ipa.sh
+@@ -168,9 +168,9 @@ PGK=g18p; N=0; for w in $PG; do case $w in none) N=9; break ;; esac; case ${w#ap
+ if [ "$P4" = on ] && [ "$PG" ]; then case $N in 1 | 2 | 3 | 4) PGK=$(echo "$PG" | tr -s ' \t' ',') ;; *) t "profile $GD: pso_gpu '$PG' is not 1-4 whitespace-separated GPU architectures (each one such as g18p or applegpu_g19p, with or without the applegpu_ prefix; there is no none: without the key the archive defaults follow pso_mtl4) - taking g18p" ;; esac; fi
+ if [ -n "${DM_PSO_GPUS+set}" ]; then GPUS=$DM_PSO_GPUS; elif [ "$P4" = on ]; then GPUS=$PGK; else GPUS=none; fi
+ if [ "$GFXAPI" = nvn ] && [ -n "$GPUS" ] && [ "$GPUS" != none ] && [ -f "$GD/shader_pairs.tsv" ]; then
+-  PSO=$W/build/$PLAT_DIR/pso/bundle
++  PSO=$W/build/${PLAT_DIR:-ios}/pso/bundle
+   t "pipeline archive for $GPUS (metal-tt; minutes when its inputs changed)"
+-  python3 "$DM/gfx/tools/pso_offline.py" --game "$GAME" --msl "$MSL_IOS/b-$V" --out "$PSO" --work "$W/build/$PLAT_DIR/pso/work" --platform "$PSO_PLAT" --gpu "$GPUS" ${DM_PSO_IOS_MIN:+--os-min "$DM_PSO_IOS_MIN"} \
++  python3 "$DM/gfx/tools/pso_offline.py" --game "$GAME" --msl "$MSL_IOS/b-$V" --out "$PSO" --work "$W/build/${PLAT_DIR:-ios}/pso/work" --platform "${PSO_PLAT:-ios}" --gpu "$GPUS" ${DM_PSO_IOS_MIN:+--os-min "$DM_PSO_IOS_MIN"} \
+     | while IFS= read -r ln; do t "$ln"; done
+   if [ "${PIPESTATUS[0]}" != 0 ]; then   # an optimization: the device builds the bases on its first start without it
+     t "[RED] pipeline archive: pso_offline.py failed (its output is above); the app is built without one and the device builds its pipeline bases on its first start (DM_PSO_GPUS=none skips this step)"
+diff --git a/docs/env_switches.tsv b/docs/env_switches.tsv
+index 0ccdbfe..3d46cc9 100644
+--- a/docs/env_switches.tsv
++++ b/docs/env_switches.tsv
+@@ -19,6 +19,7 @@ DM_CHEATS_ANY_BUILD	switch	`1` loads a cheat file written for another build of t
+ DM_CHEATS_DEBUG	diagnostic	Logs every memory write a cheat makes and the cheat file context the menu's "another version" rows come from
+ DM_CHEATS_ON	switch	Comma-separated cheat names turned on at launch, besides the saved per-build enabled states
+ DM_CHEATS_WINDOW	switch	`1` opens the Mac Cheats panel beside the game from the start
++DM_CLOUDKIT_CONTAINER	switch	CloudKit container identifier baked into `DmShell` (`DMCloudKitContainer` in `Info.plist` and iCloud entitlements in `build_shell.sh`; read by `CloudSaves.m` for CloudKit save sync)
+ DM_COPY_GAME_RESOURCES	switch	`NO` skips the Xcode build phase that copies the game's resources into the app (`stage_resources.sh`, on by default); `build_ipa.sh` sets it for its unsigned build, which packs them itself
+ DM_COPY_ROMFS	switch	`NO` keeps the game files out of the app, in the Xcode build phase (`stage_resources.sh`) and in the unsigned IPA of `build_ipa.sh` (on by default): `main.m` takes the validated `Documents/romfs.img` copied by `scripts/push_romfs.sh`, then a `Documents/romfs` folder; the build writes the image's identity as `romfs.id` into the app, and `main.m` uses only a matching image (`--romfs separate` of the NSP script sets this)
+ DM_CTL	diagnostic	`=<file>` (Mac): the host polls the file every 100 ms and runs each appended line: button presses, `shot`, `passdump`, `texdump`, `env KEY=VALUE`, `peek`, `memdump`, `drag` and more
+@@ -250,6 +251,7 @@ DM_PAD_PRESS_TO_JOIN	player	`1`: a controller is no player until one of its butt
+ DM_PATCH_FRONT	switch	`=<bytes>`: the size of the patch area right before the module base for a long text (`BIG_TEXT`); set only by the rewriter's own rerun with the size it needs
+ DM_PHONE_MOTION	switch	On iOS, whether the phone's own device motion drives player 1's six-axis sensor: `auto` (default) while no controller supplies fresh motion, `1` phone only, `0` never; each source keeps its own orientation
+ DM_PICTURE_FIT	player	`fill` scales the 16:9 picture on the iPhone and iPad until it covers the screen in landscape and crops the edges (a portrait or tabletop split and a TV stay fitted); `fit` or unset, the largest 16:9 rectangle with black bars. Launcher and in-game menu setting
++DM_PLATFORM	switch	Target Apple platform for `build_ipa.sh`, `build_shell.sh`, and `gen_build.py`: `ios` (default, iPhone/iPad) or `tvos` (Apple TV)
+ DM_PREEMPT	switch	`0` / `1` overrides the profile's `core_preempt`: also check already-runnable higher-priority peers on the caller's core after every thread SVC
+ DM_PRELOAD	diagnostic	Set: on the Mac, runs the host's early background loading (`dm_host_preload_start`) as the iOS app does, to exercise that path
+ DM_PRESENT_FIFO	switch	`0` makes the display link take the newest queued frame each tick, as before; by default it shows frames in order, at most one tick behind
+@@ -324,7 +326,12 @@ DM_RUMBLE_LOG	diagnostic	`=1` logs the game's vibration handle requests and, onc
+ DM_RUMBLE_MIN	player	`=0..0.9`: controller rumble levels below it stay silent and the rest is stretched over the full range (default 0; the phone is unaffected); for games whose quiet HD rumble texture keeps rotating motors running (Mario Kart 8 Deluxe: 0.45); launcher setting
+ DM_SAVE	path	This run's save folder (must be set); the device save is `<DM_SAVE>_device`, and `pso_user.tsv` goes in its parent folder; the Mac launcher, the iOS app and the NSP script set it
+ DM_SAVED_CHOICES	switch	`0` ignores the player's saved choices (launcher.<VAR> in the app's preferences) and leaves them saved; the Mac launcher and the iOS settings screen
++DM_SAVE_BRIDGE_FALLBACK_URL	switch	Fallback HTTP base URL baked into `DmShell`'s `Info.plist` as `DMSaveBridgeFallbackURL` (`build_shell.sh`) when the primary Mac save bridge URL cannot be reached
++DM_SAVE_BRIDGE_TOKEN	switch	Bearer token baked into `DmShell`'s `Info.plist` as `DMSaveBridgeToken` (`build_shell.sh`) and used by `CloudSaves.m` to authenticate save-bridge HTTP requests
++DM_SAVE_BRIDGE_URL	switch	Primary HTTP base URL for the Mac save bridge baked into `DmShell`'s `Info.plist` as `DMSaveBridgeURL` (`build_shell.sh`; enables `NSAllowsLocalNetworking`)
+ DM_SAVE_SYNC	player	Cloud saves: the folder whose `<title ID>/save.dmsync` the save is synced through, `icloud` for iCloud Drive/nxnative Saves (the Mac); `0` or unset, off. The Mac launcher sets the folder chosen in its settings window's Cloud saves, the iPhone app the one picked in its launcher (dm/host/save_sync.h)
++DM_SAVE_SYNC_FALLBACK	switch	Fallback HTTP base URL retried by `save_sync_remote.m` when the primary HTTP `DM_SAVE_SYNC` URL is unreachable; `CloudSaves.m` sets it from `DMSaveBridgeURL` or `DMSaveBridgeFallbackURL`
++DM_SAVE_SYNC_TOKEN	switch	Bearer token sent as `Authorization: Bearer <token>` by `save_sync_remote.m` for HTTP save sync; `CloudSaves.m` sets it from defaults or `DMSaveBridgeToken`
+ DM_SCHEME_NAME	switch	Set by `build_ipa.sh` itself for xcodegen's `project.yml`: the Xcode scheme name, `DmIOS`, or `<display name> (<title ID>)` for a project prepared with `--prepare-xcode`
+ DM_SCREEN	player	`=<number>` opens the Mac window on the connected screen with that `NSScreenNumber` (`CGDirectDisplayID`), centred, before any `DM_FULLSCREEN` request; an unknown number is logged and ignored. The NX2Apple launcher sets it to its own window's screen
+ DM_SCREEN_ASPECT	player	`=<width/height>` (1.3 to 1.77, e.g. `1.43` for the iPhone Duo) renders a game whose profile has `screen_aspect on` in that shape: output 1920 wide, 1280-wide layout space, the HUD at the taller edges and 16:9's sides in view; `auto` (iOS) the app window's own shape when it is taller than 16:9, else 16:9; `0` or unset is 16:9; launcher setting
+@@ -334,6 +341,7 @@ DM_SCREEN_HUD	diagnostic	`=<edge>,<listed>,<full width>,<full height>[,<tallest>
+ DM_SCREEN_MATCH	switch	`0` keeps the screen's refresh rate in fullscreen; by default a Mac screen whose rate is not a multiple of the game's frame rate switches to one that is (144 → 120 Hz)
+ DM_SF_TRACE	diagnostic	`=1` logs every request on the game's own HIPC client sessions that the host answers (`hle_sf.c`)
+ DM_SHADER_FILES	switch	`1` packs an NVN game's shader library into the unsigned IPA of `build_ipa.sh` as its separate files, `msl/b-<chain>/`, not as the one file `b-<chain>.img`, for install tools that cannot copy a large file (AltServer: 2 GiB) (`pack_ipa.py --shader-files`; off by default; `--shader-files` of the NSP script sets this)
++DM_SHADER_SDK	switch	Apple SDK targeted by `own_compilers.py` when offline shader translation builds Metal shader libraries: `iphoneos` (default) or `appletvos` (`build_ipa_from_nsp.py`)
+ DM_SHAKE_G	switch	`=<G>`: on iOS, the acceleration beyond gravity above which a flick of the phone shakes the controller's six-axis sensor (default 1.5)
+ DM_SHARED_FONT	path	Font file served for every shared-font type except the Nintendo extension (default `$DM_FONT_DIR/standard.ttf`, then macOS's Arial Unicode)
+ DM_SHARED_FONT_EXT	path	Font file served for shared-font type 5, the Nintendo extension with the button icons (default `$DM_FONT_DIR/nintendo_ext.ttf`, made by `make_ext_font.py`)
+@@ -382,6 +390,7 @@ DM_TOUCH_LAYOUT	player	The player's per-layout touch-control arrangement, encode
+ DM_TOUCH_LOG	diagnostic	`=1` logs each touch-screen read with touch points (sample, finger, position, attributes) and each gesture entry, up to 500 lines
+ DM_TOUCH_SIZE	player	iOS touch-control size: small, medium (default) or large. Controls move toward medium when the requested size does not fit
+ DM_TOUCH_STICK	player	iOS left touch-stick position: corner (default), higher or inward
++DM_TV_NATIVE_4K	switch	On tvOS (`front_ios.m`), keeps native 4K drawable resolution instead of clamping `maxPixelWidth` to 1920 (1080p upscaled by Apple TV)
+ DM_UDC_SELFTEST	diagnostic	`=1` runs a start-up check of DontCare load and store on private depth-stencil and RGBA8 textures (clear, Load + DontCare, read back) and logs one result line
+ DM_UE_SHADERS	path	Folder of the Unreal shader code archives decoded by `uepak.py`, for `shader_split.py` (default `ue_shaders` beside the RomFS); needed when the RomFS has Unreal paks
+ DM_UE_TEXTURE_POOL	switch	Megabytes Unreal's texture streaming pool (`r.Streaming.PoolSize`) is raised to, overriding the profile's `ue_texture_pool`; `0` keeps the game's own pool. On iOS only this switch turns it on (`Documents/env.txt`)

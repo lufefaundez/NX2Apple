@@ -70,7 +70,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ (desde Configuración)"
+            "value": "%@ (desde Ajustes)"
           }
         },
         "fr": {
@@ -1422,7 +1422,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Falta el manifiesto del juego"
+            "value": "Falta game.manifest.json"
           }
         },
         "fr": {
@@ -1474,7 +1474,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Mantén pulsado para salir"
+            "value": "Mantén presionado para salir"
           }
         },
         "fr": {
@@ -1942,7 +1942,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "bien"
+            "value": "OK"
           }
         },
         "fr": {
@@ -2046,7 +2046,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "encendido"
+            "value": "Encendido"
           }
         },
         "fr": {
@@ -2202,7 +2202,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Preparando juego..."
+            "value": "Preparando el juego…"
           }
         },
         "fr": {
@@ -2254,7 +2254,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "dejar de fumar"
+            "value": "Salir"
           }
         },
         "fr": {
@@ -2306,7 +2306,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "¿Salir %@?"
+            "value": "¿Salir de %@?"
           }
         },
         "fr": {
@@ -2358,7 +2358,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Stick derecho: arrastra aquí"
+            "value": "Palanca derecha: arrastra aquí"
           }
         },
         "fr": {
@@ -2930,7 +2930,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Concha"
+            "value": "Shell"
           }
         },
         "fr": {
@@ -3138,7 +3138,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Ese lugar no se podía recordar. Prueba con uno diferente."
+            "value": "No se pudo recordar esa ubicación. Prueba con otra."
           }
         },
         "fr": {
@@ -3242,7 +3242,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "La carpeta que eligió antes ya no se puede leer. Por favor, selecciónelo nuevamente."
+            "value": "La carpeta que elegiste antes ya no se puede leer. Vuelve a seleccionarla."
           }
         },
         "fr": {
@@ -3398,7 +3398,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "La ubicación que eligió antes ya no es legible (la aplicación se firmó de manera diferente). Por favor, selecciónelo nuevamente."
+            "value": "La ubicación que elegiste antes ya no se puede leer (la app fue firmada de otra forma). Vuelve a seleccionarla."
           }
         },
         "fr": {
@@ -3554,7 +3554,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "La carpeta de esta aplicación."
+            "value": "Carpeta de esta app"
           }
         },
         "fr": {
@@ -3606,7 +3606,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "La carpeta de esta aplicación aún no tiene datos para este juego. Cópialo en games/%@ en la carpeta de esta aplicación en Archivos."
+            "value": "La carpeta de esta app aún no tiene datos para este juego. Cópialos en games/%@ dentro de la carpeta de esta app en Archivos."
           }
         },
         "fr": {
@@ -3762,7 +3762,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Este juego fue creado para una versión diferente de esta aplicación. Actualiza la aplicación o reconstruye el juego en el iniciador de tu Mac."
+            "value": "Este juego se compiló para otra versión de esta app. Actualiza la app o recompila el juego en el lanzador de tu Mac."
           }
         },
         "fr": {
@@ -3814,7 +3814,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Los archivos de este juego están dañados. Reconstruye el juego en el iniciador de tu Mac."
+            "value": "Los archivos de este juego están dañados. Recompila el juego en el lanzador de tu Mac."
           }
         },
         "fr": {
@@ -3918,7 +3918,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El manifiesto de este juego está dañado. Reconstruye el juego en el iniciador de tu Mac."
+            "value": "El manifiesto de este juego está dañado. Recompila el juego en el lanzador de tu Mac."
           }
         },
         "fr": {
@@ -3970,7 +3970,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Falta el manifiesto de este juego. Reconstruye el juego en el iniciador de tu Mac."
+            "value": "Falta el manifiesto de este juego. Recompila el juego en el lanzador de tu Mac."
           }
         },
         "fr": {
@@ -4022,7 +4022,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "La lista de configuración de este juego está dañada. Reconstruye el juego en el iniciador de tu Mac."
+            "value": "La lista de ajustes de este juego está dañada. Recompila el juego en el lanzador de tu Mac."
           }
         },
         "fr": {
@@ -4074,7 +4074,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Falta la lista de configuraciones de este juego. Reconstruye el juego en el iniciador de tu Mac."
+            "value": "Falta la lista de ajustes de este juego. Recompila el juego en el lanzador de tu Mac."
           }
         },
         "fr": {
@@ -4178,7 +4178,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Se perderá el progreso no guardado. La aplicación se cierra. Ábrelo de nuevo para volver a tus juegos."
+            "value": "Se perderá el progreso no guardado. La app se cerrará. Ábrela de nuevo para volver a tus juegos."
           }
         },
         "fr": {
