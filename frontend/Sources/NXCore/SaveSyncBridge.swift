@@ -58,7 +58,11 @@ package final class SaveSyncBridge: @unchecked Sendable {
     }
 
     package static func savesRoot(home: String = NSHomeDirectory()) -> URL {
-        URL(fileURLWithPath: home + "/Library/Mobile Documents/com~apple~CloudDocs/" + icloudFolder, isDirectory: true)
+        let base = home + "/Library/Mobile Documents/com~apple~CloudDocs"
+        if FileManager.default.fileExists(atPath: base + "/NX Save data") {
+            return URL(fileURLWithPath: base + "/NX Save data", isDirectory: true)
+        }
+        return URL(fileURLWithPath: base + "/" + icloudFolder, isDirectory: true)
     }
 
     package func start() {

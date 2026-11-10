@@ -153,7 +153,7 @@ import NXCore
     package func prepareEngine() -> Task<Void, Never> {
         guard let bundled = bundle, !busy, let id = EngineStore.identity(of: bundled) else { return Task {} }
         let selected = selection.engineID
-        let appMovedOn = selection.channel == .stable && selected != id && selection.version != appVersion
+        let appMovedOn = selection.channel == .stable && selected != id
         if !appMovedOn, engineStore.isUsable(selected), let dir = engineStore.directory(for: selected) {
             setRepoPath(dir.path)
             return checkForUpdate(automatic: true)

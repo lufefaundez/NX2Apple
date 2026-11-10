@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A Mac game's cloud saves as the engine reads them (#499), and what its last session's log says about the sync.
@@ -12,6 +13,15 @@ package enum CloudSaveSync {
     /// The key in the app's preferences domain (dm/mac/launcher.c, cloud_saves_folder).
     package static let preferenceKey = "cloudSaves.folder"
     package static let icloudFolder = "nxnative Saves"
+    package static let altIcloudFolder = "NX Save data"
+
+    package enum SyncResult: Equatable {
+        case upToDate
+        case downloaded(Date)
+        case uploaded(Date)
+        case noCloudSave
+        case failed(String)
+    }
 
     /// Where the folder that counts was set.
     package enum Source: Equatable { case playerEnv, appEnv, preference, none }
@@ -44,14 +54,213 @@ package enum CloudSaveSync {
         return nil
     }
 
-    /// The folder a value means: nil for off (`0`, empty), iCloud Drive › nxnative Saves for `icloud`, else the path as written
+    /// The folder a value means: nil for off (`0`, empty), iCloud Drive › nxnative Saves (or NX Save data) for `icloud`, else the path as written
     /// without a trailing slash.
     package static func folder(for value: String?, home: String = NSHomeDirectory()) -> String? {
         guard let value, !value.isEmpty, value != "0" else { return nil }
-        if value == "icloud" { return home + "/Library/Mobile Documents/com~apple~CloudDocs/" + icloudFolder }
+        if value == "icloud" {
+            let base = home + "/Library/Mobile Documents/com~apple~CloudDocs"
+            if FileManager.default.fileExists(atPath: base + "/" + altIcloudFolder) {
+                return base + "/" + altIcloudFolder
+            }
+            return base + "/" + icloudFolder
+        }
         var path = (value as NSString).expandingTildeInPath
         while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
         return path
+    }
+
+    package static func unpack(dmsyncData data: Data, into dir: URL) throws {
+        guard data.count >= 144 else {
+            throw NSError(domain: "DMSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid save archive size"])
+        }
+        guard data.prefix(8) == Data("DMSYNC1\n".utf8) else {
+            throw NSError(domain: "DMSync", code: 2, userInfo: [NSLocalizedDescriptionKey: "Invalid save magic"])
+        }
+        let entryCount = data.subdata(in: 12..<16).withUnsafeBytes { $0.load(as: UInt32.self) }
+        var offset = 144
+        let fm = FileManager.default
+        for _ in 0..<entryCount {
+            guard offset + 24 <= data.count else {
+                throw NSError(domain: "DMSync", code: 3, userInfo: [NSLocalizedDescriptionKey: "Truncated entry header"])
+            }
+            let entryType = data[offset]
+            let pl = Int(data.subdata(in: offset + 2..<offset + 4).withUnsafeBytes { $0.load(as: UInt16.self) })
+            let gl = Int(data.subdata(in: offset + 4..<offset + 6).withUnsafeBytes { $0.load(as: UInt16.self) })
+            let sz = Int(data.subdata(in: offset + 8..<offset + 16).withUnsafeBytes { $0.load(as: UInt64.self) })
+            let mt = Int64(data.subdata(in: offset + 16..<offset + 24).withUnsafeBytes { $0.load(as: Int64.self) })
+            offset += 24
+            guard offset + pl + gl + sz <= data.count else {
+                throw NSError(domain: "DMSync", code: 4, userInfo: [NSLocalizedDescriptionKey: "Truncated entry payload"])
+            }
+            guard let path = String(data: data.subdata(in: offset..<offset + pl), encoding: .utf8) else {
+                throw NSError(domain: "DMSync", code: 5, userInfo: [NSLocalizedDescriptionKey: "Invalid path"])
+            }
+            offset += pl + gl
+            let fileData = data.subdata(in: offset..<offset + sz)
+            offset += sz
+            
+            let destURL = dir.appendingPathComponent(path)
+            if entryType == 1 {
+                try fm.createDirectory(at: destURL, withIntermediateDirectories: true)
+            } else if entryType == 2 {
+                try fm.createDirectory(at: destURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fileData.write(to: destURL, options: .atomic)
+                let date = Date(timeIntervalSince1970: TimeInterval(mt))
+                try? fm.setAttributes([.modificationDate: date], ofItemAtPath: destURL.path)
+            }
+        }
+    }
+
+    package static func pack(from dir: URL, titleID: String) throws -> Data {
+        let fm = FileManager.default
+        var entries: [(path: String, isDir: Bool, data: Data, mtime: Int64)] = []
+        for folder in ["save", "save_device"] {
+            let folderURL = dir.appendingPathComponent(folder)
+            guard fm.fileExists(atPath: folderURL.path) else { continue }
+            guard let enumerator = fm.enumerator(at: folderURL, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey]) else { continue }
+            for case let fileURL as URL in enumerator {
+                let rel = fileURL.path.dropFirst(dir.path.count + (dir.path.hasSuffix("/") ? 0 : 1))
+                let rv = try fileURL.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey])
+                let isDir = rv.isDirectory ?? false
+                let mtime = Int64(rv.contentModificationDate?.timeIntervalSince1970 ?? 0)
+                if isDir {
+                    entries.append((String(rel), true, Data(), mtime))
+                } else {
+                    let d = try Data(contentsOf: fileURL)
+                    entries.append((String(rel), false, d, mtime))
+                }
+            }
+        }
+        var data = Data()
+        data.append(Data("DMSYNC1\n".utf8))
+        var ver: UInt32 = 1
+        data.append(Data(bytes: &ver, count: 4))
+        var count = UInt32(entries.count)
+        data.append(Data(bytes: &count, count: 4))
+        data.append(Data(repeating: 0x30, count: 32))
+        var saved = Int64(Date().timeIntervalSince1970)
+        data.append(Data(bytes: &saved, count: 8))
+        var titleBytes = [UInt8](repeating: 0, count: 24)
+        for (i, b) in titleID.utf8.prefix(23).enumerated() { titleBytes[i] = b }
+        data.append(Data(titleBytes))
+        var devBytes = [UInt8](repeating: 0, count: 64)
+        for (i, b) in "Mac".utf8.prefix(63).enumerated() { devBytes[i] = b }
+        data.append(Data(devBytes))
+        for entry in entries {
+            var entHdr = Data(count: 24)
+            entHdr[0] = entry.isDir ? 1 : 2
+            var pl = UInt16(entry.path.utf8.count)
+            entHdr.replaceSubrange(2..<4, with: Data(bytes: &pl, count: 2))
+            var gl: UInt16 = 0
+            entHdr.replaceSubrange(4..<6, with: Data(bytes: &gl, count: 2))
+            var sz = UInt64(entry.data.count)
+            entHdr.replaceSubrange(8..<16, with: Data(bytes: &sz, count: 8))
+            var mt = entry.mtime
+            entHdr.replaceSubrange(16..<24, with: Data(bytes: &mt, count: 8))
+            data.append(entHdr)
+            data.append(Data(entry.path.utf8))
+            if !entry.isDir { data.append(entry.data) }
+        }
+        data.append(Data("DMSYNCE\n".utf8))
+        let hash = SHA256.hash(data: data.subdata(in: 144..<data.count - 8))
+        let hexHash = hash.map { String(format: "%02x", $0) }.joined().prefix(32)
+        data.replaceSubrange(16..<48, with: Data(hexHash.utf8))
+        return data
+    }
+
+    @discardableResult
+    package static func syncNow(titleID: String, folder: String? = nil, home: String = NSHomeDirectory()) -> SyncResult {
+        let fm = FileManager.default
+        let resolvedFolder: String
+        if let folder {
+            resolvedFolder = folder
+        } else {
+            let base = home + "/Library/Mobile Documents/com~apple~CloudDocs"
+            if fm.fileExists(atPath: base + "/" + altIcloudFolder) {
+                resolvedFolder = base + "/" + altIcloudFolder
+            } else {
+                resolvedFolder = base + "/" + icloudFolder
+            }
+        }
+        let localGameDir = URL(fileURLWithPath: home + "/Library/Application Support/nxnative/" + titleID.uppercased())
+        let localSaveDir = localGameDir.appendingPathComponent("save")
+        let cloudPath = saveFile(folder: resolvedFolder, titleID: titleID)
+        let cloudURL = URL(fileURLWithPath: cloudPath)
+        
+        let cloudExists = fm.fileExists(atPath: cloudPath)
+        let localExists = fm.fileExists(atPath: localSaveDir.path)
+        
+        let envURL = localGameDir.appendingPathComponent("env.txt")
+        let curEnv = (try? String(contentsOf: envURL, encoding: .utf8)) ?? ""
+        let newEnv = settingEnv(curEnv, to: "icloud")
+        try? fm.createDirectory(at: localGameDir, withIntermediateDirectories: true)
+        try? newEnv.write(to: envURL, atomically: true, encoding: .utf8)
+        
+        if !cloudExists && !localExists { return .noCloudSave }
+        
+        var cloudDate = Date.distantPast
+        if cloudExists, let attrs = try? fm.attributesOfItem(atPath: cloudPath), let d = attrs[.modificationDate] as? Date {
+            cloudDate = d
+        }
+        
+        var localDate = Date.distantPast
+        if localExists {
+            if let enumerator = fm.enumerator(at: localSaveDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+                for case let fileURL as URL in enumerator {
+                    if let d = (try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate {
+                        if d > localDate { localDate = d }
+                    }
+                }
+            }
+        }
+        
+        if cloudExists && (!localExists || cloudDate.timeIntervalSince(localDate) > 2.0) {
+            do {
+                let data = try Data(contentsOf: cloudURL)
+                if localExists {
+                    let backupDir = localGameDir.appendingPathComponent("save-backups/save-\(Int(Date().timeIntervalSince1970))")
+                    try? fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
+                    try? fm.copyItem(at: localSaveDir, to: backupDir.appendingPathComponent("save"))
+                }
+                try unpack(dmsyncData: data, into: localGameDir)
+                return .downloaded(cloudDate)
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+        } else if localExists && (!cloudExists || localDate.timeIntervalSince(cloudDate) > 2.0) {
+            do {
+                let data = try pack(from: localGameDir, titleID: titleID)
+                try fm.createDirectory(at: cloudURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: cloudURL, options: .atomic)
+                return .uploaded(localDate)
+            } catch {
+                return .failed(error.localizedDescription)
+            }
+        }
+        return .upToDate
+    }
+
+    package static func syncAllGames(home: String = NSHomeDirectory()) -> [String: SyncResult] {
+        let fm = FileManager.default
+        var results: [String: SyncResult] = [:]
+        let appSupport = home + "/Library/Application Support/nxnative"
+        if let list = try? fm.contentsOfDirectory(atPath: appSupport) {
+            for item in list {
+                guard item.count == 16, UInt64(item, radix: 16) != nil else { continue }
+                results[item] = syncNow(titleID: item, home: home)
+            }
+        }
+        for folder in [altIcloudFolder, icloudFolder] {
+            let cloudRoot = home + "/Library/Mobile Documents/com~apple~CloudDocs/" + folder
+            if let titles = try? fm.contentsOfDirectory(atPath: cloudRoot) {
+                for item in titles {
+                    guard item.count == 16, UInt64(item, radix: 16) != nil, results[item] == nil else { continue }
+                    results[item] = syncNow(titleID: item, home: home)
+                }
+            }
+        }
+        return results
     }
 
     /// The setting that counts, from the two env.txt texts (nil when the file is missing) and the preference.
