@@ -1,5 +1,67 @@
 import Foundation
 
+/// A player profile for per-user save isolation on iPhone, iPad, and Apple TV 4K.
+/// The built-in `"default"` profile stores saves in `<game>/save`; custom profiles use `<game>/profiles/<id>/save`.
+public struct SaveProfile: Codable, Equatable, Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+public enum SaveProfileValidation {
+    private static let maxIDLength = 32
+
+    public static func isValidID(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= maxIDLength else { return false }
+        let scalars = Array(id.unicodeScalars)
+        guard let first = scalars.first, isASCIIAlphaNum(first) else { return false }
+        return scalars.dropFirst().allSatisfy { isASCIIAlphaNum($0) || $0 == "_" || $0 == "-" }
+    }
+
+    public static func normalizeID(from rawName: String, existing: Set<String> = []) -> String {
+        let folded = rawName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .lowercased()
+        var slug = ""
+        var prevDash = false
+        for scalar in folded.unicodeScalars {
+            if isASCIIAlphaNum(scalar) {
+                slug.unicodeScalars.append(scalar)
+                prevDash = false
+            } else if !slug.isEmpty && !prevDash {
+                slug.append("-")
+                prevDash = true
+            }
+        }
+        while slug.hasSuffix("-") || slug.hasSuffix("_") { slug.removeLast() }
+        var base = String(slug.prefix(28))
+        while base.hasSuffix("-") || base.hasSuffix("_") { base.removeLast() }
+        if base.isEmpty || base == ShellSettingsStore.defaultProfileID {
+            base = "player"
+        }
+        if !existing.contains(base) && base != ShellSettingsStore.defaultProfileID {
+            return base
+        }
+        var suffix = 2
+        while true {
+            let tag = "-\(suffix)"
+            let clipped = String(base.prefix(maxIDLength - tag.count))
+            let candidate = clipped + tag
+            if !existing.contains(candidate) && candidate != ShellSettingsStore.defaultProfileID {
+                return candidate
+            }
+            suffix += 1
+        }
+    }
+
+    private static func isASCIIAlphaNum(_ s: UnicodeScalar) -> Bool {
+        (s.value >= 48 && s.value <= 57) || (s.value >= 97 && s.value <= 122)
+    }
+}
+
 /// The shell-level settings, one suite shared by every game: the game-data folder, the cloud-saves folder,
 /// the default performance HUD and the touch controls. A game's own settings and bookmarks win over these, and
 /// these win over the built-in defaults (ShellSettingsStore priority: game > shell > built-in).
@@ -21,6 +83,10 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public static let touchLayoutKey = "touchLayout"             // the player's arrangement: DM_TOUCH_LAYOUT for every game
     public static let saveBridgeURLKey = "saveBridgeURL"
     public static let saveBridgeTokenKey = "saveBridgeToken"
+    public static let defaultProfileID = "default"
+    public static let saveProfilesKey = "saveProfiles"
+    public static let activeSaveProfileKey = "activeSaveProfile"
+    public static let defaultProfileNameKey = "defaultProfileName"
 
     /// The store the app reads and writes. Tests and previews swap it.
     nonisolated(unsafe) public static var current = ShellSettingsStore()
@@ -68,6 +134,144 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public func clearSaveBridge() {
         defaults.removeObject(forKey: Self.saveBridgeURLKey)
         defaults.removeObject(forKey: Self.saveBridgeTokenKey)
+    }
+
+    public var defaultProfileName: String? {
+        guard let raw = defaults.string(forKey: Self.defaultProfileNameKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        return raw
+    }
+
+    public func storeDefaultProfileName(_ name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty { defaults.removeObject(forKey: Self.defaultProfileNameKey) }
+        else { defaults.set(trimmed, forKey: Self.defaultProfileNameKey) }
+    }
+
+    public var customSaveProfiles: [SaveProfile] {
+        guard let json = defaults.string(forKey: Self.saveProfilesKey),
+              let data = json.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([SaveProfile].self, from: data) else {
+            return []
+        }
+        return Self.sanitizeCustomProfiles(decoded)
+    }
+
+    public func storeCustomSaveProfiles(_ profiles: [SaveProfile]) {
+        let sanitized = Self.sanitizeCustomProfiles(profiles)
+        if sanitized.isEmpty {
+            defaults.removeObject(forKey: Self.saveProfilesKey)
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if let data = try? encoder.encode(sanitized), let str = String(data: data, encoding: .utf8) {
+            defaults.set(str, forKey: Self.saveProfilesKey)
+        }
+    }
+
+    public func saveProfiles(defaultName: String? = nil) -> [SaveProfile] {
+        let resolvedDefault = defaultProfileName ?? defaultName ?? ShellStrings.text("Default")
+        return [SaveProfile(id: Self.defaultProfileID, name: resolvedDefault)] + customSaveProfiles
+    }
+
+    public var activeSaveProfileID: String {
+        let saved = defaults.string(forKey: Self.activeSaveProfileKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if saved.isEmpty || saved == Self.defaultProfileID { return Self.defaultProfileID }
+        return customSaveProfiles.contains { $0.id == saved } ? saved : Self.defaultProfileID
+    }
+
+    public func storeActiveSaveProfileID(_ id: String) {
+        if id == Self.defaultProfileID || customSaveProfiles.contains(where: { $0.id == id }) {
+            defaults.set(id, forKey: Self.activeSaveProfileKey)
+        } else {
+            defaults.set(Self.defaultProfileID, forKey: Self.activeSaveProfileKey)
+        }
+    }
+
+    public func activeSaveProfile(defaultName: String? = nil) -> SaveProfile {
+        let list = saveProfiles(defaultName: defaultName)
+        let activeID = activeSaveProfileID
+        return list.first { $0.id == activeID } ?? list[0]
+    }
+
+    @discardableResult
+    public func addSaveProfile(name: String) -> SaveProfile? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var current = customSaveProfiles
+        let existingIDs = Set(current.map(\.id))
+        let id = SaveProfileValidation.normalizeID(from: trimmed, existing: existingIDs)
+        let profile = SaveProfile(id: id, name: trimmed)
+        current.append(profile)
+        storeCustomSaveProfiles(current)
+        return profile
+    }
+
+    public func removeSaveProfile(id: String) {
+        guard id != Self.defaultProfileID else { return }
+        var current = customSaveProfiles
+        current.removeAll { $0.id == id }
+        storeCustomSaveProfiles(current)
+        if activeSaveProfileID == id {
+            storeActiveSaveProfileID(Self.defaultProfileID)
+        }
+    }
+
+    /// Seeds profiles from embedded `DMSaveProfiles` JSON in Info.plist without discarding extra local profiles.
+    public func seedSaveProfiles(fromJSON json: String?) {
+        guard let json = json?.trimmingCharacters(in: .whitespacesAndNewlines), !json.isEmpty,
+              let data = json.data(using: .utf8),
+              let incoming = try? JSONDecoder().decode([SaveProfile].self, from: data) else {
+            return
+        }
+        _ = mergeIncomingProfiles(incoming)
+    }
+
+    /// Merges profiles fetched from the Mac bridge (`[{"id","name"}]`) and reports whether anything changed.
+    @discardableResult
+    public func mergeIncomingProfiles(_ incoming: [SaveProfile]) -> Bool {
+        var changed = false
+        for entry in incoming where entry.id == Self.defaultProfileID {
+            let trimmed = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && trimmed != defaultProfileName {
+                storeDefaultProfileName(trimmed)
+                changed = true
+            }
+        }
+        var current = customSaveProfiles
+        for entry in incoming where entry.id != Self.defaultProfileID {
+            let trimmed = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, SaveProfileValidation.isValidID(entry.id) else { continue }
+            if let idx = current.firstIndex(where: { $0.id == entry.id }) {
+                if current[idx].name != trimmed {
+                    current[idx].name = trimmed
+                    changed = true
+                }
+            } else {
+                current.append(SaveProfile(id: entry.id, name: trimmed))
+                changed = true
+            }
+        }
+        if changed {
+            storeCustomSaveProfiles(current)
+        }
+        return changed
+    }
+
+    private static func sanitizeCustomProfiles(_ profiles: [SaveProfile]) -> [SaveProfile] {
+        var seen = Set<String>([defaultProfileID])
+        var result: [SaveProfile] = []
+        for entry in profiles {
+            let trimmedName = entry.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty, SaveProfileValidation.isValidID(entry.id), !seen.contains(entry.id) else {
+                continue
+            }
+            seen.insert(entry.id)
+            result.append(SaveProfile(id: entry.id, name: trimmedName))
+        }
+        return result
     }
 
     /// The touch controls' size for every game: small, medium (the built-in size) or large.

@@ -109,4 +109,102 @@ final class SaveSyncBridgeTests: XCTestCase {
         XCTAssertTrue(respText.hasPrefix("HTTP/1.1 400 "), "Expected 400 for truncated body, got: \(respText)")
         XCTAssertEqual(try Data(contentsOf: saveFile), original)
     }
+
+    func testProfilesEndpointRequiresAuthAndStripsFolderPath() async throws {
+        SaveBridgeProfileStore.setDefaultProfileName("Luis Felipe", defaults: testDefaults)
+        let customDir = root.appendingPathComponent("custom-maite", isDirectory: true)
+        let added = SaveBridgeProfileStore.addProfile(name: "Maite", folderPath: customDir.path, defaults: testDefaults)
+        XCTAssertEqual(added?.id, "maite")
+
+        let (_, port) = try startBridge(token: "top-secret")
+        let url = URL(string: "http://127.0.0.1:\(port)/saves/profiles.json")!
+
+        let (_, unauthResp) = try await URLSession.shared.data(for: URLRequest(url: url))
+        XCTAssertEqual((unauthResp as? HTTPURLResponse)?.statusCode, 401)
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer top-secret", forHTTPHeaderField: "Authorization")
+        let (data, okResp) = try await URLSession.shared.data(for: req)
+        XCTAssertEqual((okResp as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual((okResp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+
+        let decoded = try JSONDecoder().decode([SaveBridgeProfile].self, from: data)
+        XCTAssertEqual(decoded.map(\.id), ["default", "maite"])
+        XCTAssertEqual(decoded.map(\.name), ["Luis Felipe", "Maite"])
+        XCTAssertTrue(decoded.allSatisfy { $0.folderPath == nil }, "Public profiles JSON must never expose Mac paths")
+    }
+
+    func testPerProfilePutGetIsolatedFromDefaultAndHonorsCustomFolder() async throws {
+        let customDir = root.appendingPathComponent("external-maite", isDirectory: true)
+        _ = SaveBridgeProfileStore.addProfile(name: "Maite", folderPath: customDir.path, defaults: testDefaults)
+        let (_, port) = try startBridge(token: "top-secret")
+        let tid = "010013C00E930000"
+
+        let defaultURL = URL(string: "http://127.0.0.1:\(port)/saves/\(tid)/save.dmsync")!
+        let maiteURL = URL(string: "http://127.0.0.1:\(port)/saves/profiles/maite/\(tid)/save.dmsync")!
+        let defaultData = Data("luis-save".utf8)
+        let maiteData = Data("maite-save".utf8)
+
+        for (url, payload) in [(defaultURL, defaultData), (maiteURL, maiteData)] {
+            var putReq = URLRequest(url: url)
+            putReq.httpMethod = "PUT"
+            putReq.httpBody = payload
+            putReq.setValue("Bearer top-secret", forHTTPHeaderField: "Authorization")
+            let (_, resp) = try await URLSession.shared.data(for: putReq)
+            XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("\(tid)/save.dmsync")), defaultData)
+        XCTAssertEqual(try Data(contentsOf: customDir.appendingPathComponent("\(tid)/save.dmsync")), maiteData)
+
+        var getMaite = URLRequest(url: maiteURL)
+        getMaite.setValue("Bearer top-secret", forHTTPHeaderField: "Authorization")
+        let (gotMaite, gotMaiteResp) = try await URLSession.shared.data(for: getMaite)
+        XCTAssertEqual((gotMaiteResp as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(gotMaite, maiteData)
+
+        var getDefault = URLRequest(url: defaultURL)
+        getDefault.setValue("Bearer top-secret", forHTTPHeaderField: "Authorization")
+        let (gotDefault, _) = try await URLSession.shared.data(for: getDefault)
+        XCTAssertEqual(gotDefault, defaultData)
+
+        // Subpath fallback without custom folderPath writes under <root>/profiles/<id>/<tid>/save.dmsync
+        _ = SaveBridgeProfileStore.addProfile(name: "Invitado", defaults: testDefaults)
+        var putGuest = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/saves/profiles/invitado/\(tid)/save.dmsync")!)
+        putGuest.httpMethod = "PUT"
+        putGuest.httpBody = Data("guest".utf8)
+        putGuest.setValue("Bearer top-secret", forHTTPHeaderField: "Authorization")
+        let (_, guestResp) = try await URLSession.shared.data(for: putGuest)
+        XCTAssertEqual((guestResp as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("profiles/invitado/\(tid)/save.dmsync")), Data("guest".utf8))
+    }
+
+    func testInvalidProfilePathsRejectedWith400() async throws {
+        let (_, port) = try startBridge(token: "top-secret")
+        let tid = "010013C00E930000"
+        for bad in ["BADCAPS", "has%20space", "-leadingdash", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] {
+            let url = URL(string: "http://127.0.0.1:\(port)/saves/profiles/\(bad)/\(tid)/save.dmsync")!
+            var req = URLRequest(url: url)
+            req.setValue("Bearer top-secret", forHTTPHeaderField: "Authorization")
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 400, "Expected 400 for profile '\(bad)'")
+        }
+    }
+
+    func testProfileValidationAndMacActiveProfilePersistence() {
+        XCTAssertEqual(SaveProfileValidation.normalizeID(from: "Maite"), "maite")
+        XCTAssertEqual(SaveProfileValidation.normalizeID(from: "Maite Sofía"), "maite-sofia")
+        XCTAssertEqual(SaveProfileValidation.normalizeID(from: "default"), "player")
+        XCTAssertEqual(SaveProfileValidation.normalizeID(from: "!!!"), "player")
+        XCTAssertEqual(SaveProfileValidation.normalizeID(from: "Maite", existing: ["maite"]), "maite-2")
+        XCTAssertEqual(SaveProfileValidation.normalizeID(from: "Maite", existing: ["maite", "maite-2"]), "maite-3")
+        XCTAssertTrue(SaveProfileValidation.normalizeID(from: String(repeating: "a", count: 60), existing: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaa"]).count <= 32)
+
+        let maite = SaveBridgeProfileStore.addProfile(name: "Maite", defaults: testDefaults)
+        XCTAssertEqual(maite?.id, "maite")
+        SaveBridgeProfileStore.setActiveMacProfileID("maite", defaults: testDefaults)
+        XCTAssertEqual(SaveBridgeProfileStore.activeMacProfileID(defaults: testDefaults), "maite")
+        SaveBridgeProfileStore.removeProfile(id: "maite", defaults: testDefaults)
+        XCTAssertEqual(SaveBridgeProfileStore.activeMacProfileID(defaults: testDefaults), "default")
+    }
 }

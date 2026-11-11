@@ -254,7 +254,7 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(24, 0, 16, 0)
         row.setSpacing(10)
 
-        # Brand (App Icon + NX2Apple — by nxnative)
+        # Brand (App Icon + NX2Apple — by luchetumare)
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
         self.app_icon_lbl = QLabel()
@@ -269,7 +269,7 @@ class MainWindow(QMainWindow):
         brand_row.addWidget(self.app_icon_lbl)
         self.title_label = QLabel('NX2Apple')
         self.title_label.setStyleSheet('font-size: 23px; font-weight: 800; color: #ffffff;')
-        self.sub_label = QLabel('— by nxnative')
+        self.sub_label = QLabel('— by luchetumare')
         self.sub_label.setObjectName('faint')
         brand_row.addWidget(self.title_label)
         brand_row.addWidget(self.sub_label)

@@ -91,7 +91,7 @@ h1 { margin-top: 22px; font-size: 42px; line-height: 1.04; font-weight: 800; let
 </style>
 <div class="glow"></div>
 <div class="left">
-  <div class="mark"><img src="%(icon)s"><div><b>NX2Apple</b><i>— by nxnative</i></div></div>
+  <div class="mark"><img src="%(icon)s"><div><b>NX2Apple</b><i>— by luchetumare</i></div></div>
   <h1>%(t1)s<br><span class="cream">%(t2)s</span></h1>
   <p class="lead">%(lead)s</p>
 </div>
@@ -106,7 +106,7 @@ body { display: flex; align-items: center; justify-content: center; }
 .mark b { font-size: 48px; letter-spacing: -1.6px; color: %(ink)s; }
 .mark i { font-size: 15px; margin-top: -4px; color: %(sub)s; }
 </style>
-<div class="mark"><img src="%(icon)s"><div><b>NX2Apple</b><i>— by nxnative</i></div></div>
+<div class="mark"><img src="%(icon)s"><div><b>NX2Apple</b><i>— by luchetumare</i></div></div>
 """
 
 

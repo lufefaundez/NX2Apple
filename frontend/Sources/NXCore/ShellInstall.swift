@@ -229,7 +229,7 @@ package enum ShellInstall {
                                    path: String, home: String, user: String, tmp: String? = nil, package: String? = nil,
                                    platform: String = "ios", cloudKitContainer: String? = nil,
                                    saveBridgeURL: String? = nil, saveBridgeFallbackURL: String? = nil,
-                                   saveBridgeToken: String? = nil) -> [String: String] {
+                                   saveBridgeToken: String? = nil, saveProfilesJSON: String? = nil) -> [String: String] {
         var env = ["SHELL_DIR": projectFolder(root: root),
                    "DM_SHELL_FRAMEWORKS": frameworks.joined(separator: "\n"),
                    "DM_BUNDLE_ID": bundleID,
@@ -242,6 +242,7 @@ package enum ShellInstall {
         if let saveBridgeURL, !saveBridgeURL.isEmpty { env["DM_SAVE_BRIDGE_URL"] = saveBridgeURL }
         if let saveBridgeFallbackURL, !saveBridgeFallbackURL.isEmpty { env["DM_SAVE_BRIDGE_FALLBACK_URL"] = saveBridgeFallbackURL }
         if let saveBridgeToken, !saveBridgeToken.isEmpty { env["DM_SAVE_BRIDGE_TOKEN"] = saveBridgeToken }
+        if let saveProfilesJSON, !saveProfilesJSON.isEmpty { env["DM_SAVE_PROFILES"] = saveProfilesJSON }
         if let tmp { env["TMPDIR"] = tmp }
         if let package { env["DM_SHELL_PACKAGE"] = package }
         return env
@@ -271,10 +272,11 @@ package enum ShellInstall {
     /// Kept free beyond the data on the device (the game's saves, shader caches, the system).
     package static let freeSpaceMargin: Int64 = 2_000_000_000
 
-    /// The shell's own log from the device (Documents/shell-log.txt, written at every start).
-    package static func shellLogCommand(xcrun: String, device: String, bundleID: String, destination: String) -> [String] {
-        [xcrun, "devicectl", "device", "copy", "from", "--device", device, "--domain-type", "appDataContainer",
-         "--domain-identifier", bundleID, "--source", "Documents/shell-log.txt", "--destination", destination]
+    /// The shell's own log from the device (Documents/shell-log.txt on iOS, Library/Caches/shell-log.txt on tvOS, written at every start).
+    package static func shellLogCommand(xcrun: String, device: String, bundleID: String, destination: String, platform: String = "ios") -> [String] {
+        let logFile = platform == "tvos" ? "Library/Caches/shell-log.txt" : "Documents/shell-log.txt"
+        return [xcrun, "devicectl", "device", "copy", "from", "--device", device, "--domain-type", "appDataContainer",
+                "--domain-identifier", bundleID, "--source", logFile, "--destination", destination]
     }
 
     /// The last "shell: free space <bytes> bytes" line of the shell's log, nil without one.
@@ -459,6 +461,7 @@ package struct ShellInstaller {
     package var saveBridgeURL: String? = nil
     package var saveBridgeFallbackURL: String? = nil
     package var saveBridgeToken: String? = nil
+    package var saveProfilesJSON: String? = nil
 
     package init(xcrun: String = "/usr/bin/xcrun", repo: String, python: String, root: String, device: String, team: String) {
         self.xcrun = xcrun; self.repo = repo; self.python = python; self.root = root; self.device = device; self.team = team
@@ -653,7 +656,7 @@ package struct ShellInstaller {
         let needed = missing.reduce(Int64(0)) { $0 + (local[$1] ?? 0) }
         let logCopy = NSTemporaryDirectory() + "nspb-shell-log-\(UUID().uuidString.prefix(8)).txt"
         defer { try? FileManager.default.removeItem(atPath: logCopy) }
-        _ = run(ShellInstall.shellLogCommand(xcrun: xcrun, device: device, bundleID: bundleID, destination: logCopy), env: nil, label: checkName, step: { _ in nil })
+        _ = run(ShellInstall.shellLogCommand(xcrun: xcrun, device: device, bundleID: bundleID, destination: logCopy, platform: platform), env: nil, label: checkName, step: { _ in nil })
         if let free = ShellInstall.freeSpace(inShellLog: try? String(contentsOfFile: logCopy, encoding: .utf8)) {
             log("device free space: \(free) bytes, the game data to copy: \(needed) bytes\n")
             if needed + ShellInstall.freeSpaceMargin > free {

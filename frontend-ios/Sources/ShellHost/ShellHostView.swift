@@ -18,7 +18,9 @@ public struct ShellHostView: View {
         LibraryView(games: model.details, controllers: model.controllers, actions: model.actions, input: model.input,
                     initialSelection: initialSelection, initialDetailOpen: initialDetailOpen, globalPadMap: model.globalPadMap,
                     padSnapshot: model.padSnapshot, shellCloudSyncing: model.shellCloudSyncing,
-                    shellCloudStatus: model.shellCloudStatus, bridgeDiscovering: model.bridgeDiscovering)
+                    shellCloudStatus: model.shellCloudStatus, bridgeDiscovering: model.bridgeDiscovering,
+                    saveProfiles: model.saveProfiles, activeSaveProfile: model.activeSaveProfile,
+                    profilesRefreshing: model.profilesRefreshing, profilesStatus: model.profilesStatus)
             .disabled(model.launchingGame)
             .overlay {
                 if model.launchingGame {

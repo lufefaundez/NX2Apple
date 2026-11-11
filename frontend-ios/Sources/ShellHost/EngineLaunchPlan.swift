@@ -39,7 +39,8 @@ public struct EngineLaunchPlan: Equatable, Sendable {
         let perGameProfile = gdir.appendingPathComponent("profile.tsv")
         env["DM_PROFILE"] = (fm.fileExists(atPath: perGameProfile.path) ? perGameProfile : fw.appendingPathComponent(manifest.profile)).path
         if let romfs = romfs(in: game.dataURL, manifest: manifest, fm, isDirectory) { env["DM_ROMFS"] = romfs.path }
-        let save = gdir.appendingPathComponent("save", isDirectory: true), temp = gdir.appendingPathComponent("temp", isDirectory: true)
+        let saveRoot = game.saveContainerURL ?? gdir
+        let save = saveRoot.appendingPathComponent("save", isDirectory: true), temp = gdir.appendingPathComponent("temp", isDirectory: true)
         env["DM_SAVE"] = save.path
         env["DM_TEMP"] = temp.path
         env["DM_NVN_SHMAP"] = fw.appendingPathComponent(manifest.shaderMap).path

@@ -12,9 +12,9 @@ public enum GameDeletion {
     public static let deletedKey = "shell.deletedBuild"
 
     /// The save folders in the game's folder (dm/host/hle_fs.c: `save`, `save_device` for a game with device save data, and
-    /// their `.work` and `.new` copies of a session). Every name that starts with `save` stays unless the player chose to delete
-    /// the saves too, so no layout of the engine's can lose one.
-    public static func isSave(_ name: String) -> Bool { name.hasPrefix("save") }
+    /// their `.work` and `.new` copies of a session, plus per-player `profiles/<id>/save...`). Every save entry stays unless
+    /// the player chose to delete the saves too, so no layout or profile can lose one.
+    public static func isSave(_ name: String) -> Bool { name.hasPrefix("save") || name == "profiles" }
 
     /// Which build of the game the app holds: the manifest's build time, else what the manifest says about the build. A
     /// framework that could not be read is named by its folder.

@@ -108,10 +108,12 @@ public struct GameDetail: Identifiable, Equatable, Sendable {
     /// Manual cloud save sync status and in-progress flag for this game.
     public var cloudSyncing: Bool
     public var cloudSyncStatus: String
+    /// Active player profile name shown in the game's Cloud saves section.
+    public var activeProfileName: String?
     public init(game: GameTile, sections: [SettingSection] = [], dataSource: String = "", dataNote: String = "",
                 cloudSaves: String? = nil, cloudNote: String = "", dlc: String = "", hasModifiedSettings: Bool = false,
                 dataFromShell: Bool = false, cloudFromShell: Bool = false, cloudCanUseShell: Bool = false,
-                cloudSyncing: Bool = false, cloudSyncStatus: String = "") {
+                cloudSyncing: Bool = false, cloudSyncStatus: String = "", activeProfileName: String? = nil) {
         self.game = game
         self.sections = sections
         self.dataSource = dataSource
@@ -125,6 +127,7 @@ public struct GameDetail: Identifiable, Equatable, Sendable {
         self.cloudCanUseShell = cloudCanUseShell
         self.cloudSyncing = cloudSyncing
         self.cloudSyncStatus = cloudSyncStatus
+        self.activeProfileName = activeProfileName
     }
 }
 
@@ -252,6 +255,11 @@ public struct ShellActions {
     public var onSyncAllCloudSaves: () -> Void
     public var onSaveBridgeChange: (_ url: String, _ token: String) -> Void
     public var onDiscoverSaveBridge: () -> Void
+    /// Player save profiles (Mac LAN Save Bridge & iCloud per-profile isolation).
+    public var onSelectSaveProfile: (String) -> Void
+    public var onAddSaveProfile: (String) -> Void
+    public var onRemoveSaveProfile: (String) -> Void
+    public var onRefreshSaveProfiles: () -> Void
     public init(onSelect: @escaping (String) -> Void = { _ in }, onPlay: @escaping (String) -> Void = { _ in },
                 onChange: @escaping (String, String, String) -> Void = { _, _, _ in },
                 onPickGameData: @escaping (String) -> Void = { _ in }, onUseAppData: @escaping (String) -> Void = { _ in },
@@ -267,7 +275,11 @@ public struct ShellActions {
                 onSyncCloudSaves: @escaping (String) -> Void = { _ in },
                 onSyncAllCloudSaves: @escaping () -> Void = {},
                 onSaveBridgeChange: @escaping (String, String) -> Void = { _, _ in },
-                onDiscoverSaveBridge: @escaping () -> Void = {}) {
+                onDiscoverSaveBridge: @escaping () -> Void = {},
+                onSelectSaveProfile: @escaping (String) -> Void = { _ in },
+                onAddSaveProfile: @escaping (String) -> Void = { _ in },
+                onRemoveSaveProfile: @escaping (String) -> Void = { _ in },
+                onRefreshSaveProfiles: @escaping () -> Void = {}) {
         self.onSelect = onSelect
         self.onPlay = onPlay
         self.onChange = onChange
@@ -292,5 +304,9 @@ public struct ShellActions {
         self.onSyncAllCloudSaves = onSyncAllCloudSaves
         self.onSaveBridgeChange = onSaveBridgeChange
         self.onDiscoverSaveBridge = onDiscoverSaveBridge
+        self.onSelectSaveProfile = onSelectSaveProfile
+        self.onAddSaveProfile = onAddSaveProfile
+        self.onRemoveSaveProfile = onRemoveSaveProfile
+        self.onRefreshSaveProfiles = onRefreshSaveProfiles
     }
 }

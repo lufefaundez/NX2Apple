@@ -129,4 +129,43 @@ import ShellUI
         #expect(game.values()[layout.env] == "1" && game.isFromShell(layout))
         #expect(GameSettingsStore(profile: profile, defaults: defaults).values()[layout.env] == "2", "an unset shell mode preserves the game's Tap default")
     }
+
+    @Test func saveProfilesSeedMergeSwitchAndSanitize() {
+        #expect(SaveProfileValidation.isValidID("maite"))
+        #expect(SaveProfileValidation.isValidID("player_2-a"))
+        #expect(!SaveProfileValidation.isValidID("-bad"))
+        #expect(!SaveProfileValidation.isValidID("a/b"))
+        #expect(SaveProfileValidation.normalizeID(from: "Maite Sofía") == "maite-sofia")
+        #expect(SaveProfileValidation.normalizeID(from: "Default") == "player")
+        #expect(SaveProfileValidation.normalizeID(from: "Maite", existing: ["maite"]) == "maite-2")
+
+        let store = shell()
+        store.seedSaveProfiles(fromJSON: #"[{"id":"default","name":"Luis Felipe"},{"id":"maite","name":"Maite"}]"#)
+        #expect(store.saveProfiles().map(\.id) == ["default", "maite"])
+        #expect(store.saveProfiles().map(\.name) == ["Luis Felipe", "Maite"])
+        #expect(store.activeSaveProfileID == "default")
+
+        store.storeActiveSaveProfileID("maite")
+        #expect(store.activeSaveProfile().name == "Maite")
+
+        let local = store.addSaveProfile(name: "Sofía")
+        #expect(local?.id == "sofia")
+        // Removing "default" is ignored; removing an active custom profile falls back to "default".
+        store.removeSaveProfile(id: "default")
+        #expect(store.saveProfiles().first?.id == "default")
+        store.storeActiveSaveProfileID("sofia")
+        store.removeSaveProfile(id: "sofia")
+        #expect(store.activeSaveProfileID == "default")
+
+        // Merging incoming profiles from Mac keeps local custom profiles and updates changed names.
+        _ = store.addSaveProfile(name: "Invitado")
+        let changed = store.mergeIncomingProfiles([
+            SaveProfile(id: "default", name: "Luis Felipe"),
+            SaveProfile(id: "maite", name: "Maite Paz"),
+            SaveProfile(id: "../bad", name: "Ignored"),
+        ])
+        #expect(changed)
+        #expect(store.saveProfiles().map(\.id) == ["default", "maite", "invitado"])
+        #expect(store.saveProfiles().first { $0.id == "maite" }?.name == "Maite Paz")
+    }
 }

@@ -24,6 +24,8 @@ public struct LaunchableGame: Equatable, Sendable {
     public var saveSyncTarget: String? = nil
     public var saveSyncFallback: String? = nil
     public var saveSyncToken: String? = nil
+    /// Active profile save root (`appFolder` for default, `appFolder/profiles/<id>` for custom profiles).
+    public var saveContainerURL: URL? = nil
 }
 
 /// The seam between the shell and the engine. The shell calls `launch` when the player presses Play on a playable game.

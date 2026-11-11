@@ -71,6 +71,11 @@ public struct GameDetailView: View {
             .accessibilityElement(children: .combine)
         }
         group(ShellStrings.text("Cloud saves")) {
+            if let profileName = detail.activeProfileName, !profileName.isEmpty {
+                LabeledContent(ShellStrings.text("Player profile"), value: profileName)
+                    .accessibilityIdentifier("detail.activeProfile")
+                divider
+            }
             #if os(tvOS)
             let defaultCloudNote = ShellStrings.text("Connect to your Mac over Wi-Fi to sync saves.")
             #else

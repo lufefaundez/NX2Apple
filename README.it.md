@@ -4,7 +4,7 @@ Follows [README.md](README.md) as of v1.2.2
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="frontend/screenshots/logo-dark.png">
-  <img src="frontend/screenshots/logo-light.png" width="360" alt="NX2Apple, by nxnative">
+  <img src="frontend/screenshots/logo-light.png" width="360" alt="NX2Apple, by luchetumare">
 </picture>
 
 **I tuoi giochi Switch, in esecuzione sul tuo iPhone.**

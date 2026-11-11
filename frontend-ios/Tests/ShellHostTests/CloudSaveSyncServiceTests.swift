@@ -387,4 +387,142 @@ private final class BridgeMemoryStore: @unchecked Sendable {
         }
         #expect(try Data(contentsOf: cloudFile) == wrongTitleData)
     }
+
+    @Test func profileURLsAndEndpointFetchingBehaveCleanly() async throws {
+        #expect(CloudSaveSyncService.profileBaseURL("http://192.168.1.10:47921/saves", profileID: "default") == "http://192.168.1.10:47921/saves")
+        #expect(CloudSaveSyncService.profileBaseURL("http://192.168.1.10:47921/saves", profileID: "maite") == "http://192.168.1.10:47921/saves/profiles/maite")
+        #expect(CloudSaveSyncService.profileBaseURL("http://192.168.1.10:47921/saves/profiles/old", profileID: "maite") == "http://192.168.1.10:47921/saves/profiles/maite")
+        #expect(CloudSaveSyncService.profileBaseURL("cloudkit://iCloud.org.example", profileID: "default") == "cloudkit://iCloud.org.example")
+        #expect(CloudSaveSyncService.profileBaseURL("cloudkit://iCloud.org.example/profiles/old", profileID: "maite") == "cloudkit://iCloud.org.example/profiles/maite")
+        #expect(CloudSaveSyncService.profilesEndpointURL(base: "http://192.168.1.10:47921/saves/profiles/maite")?.absoluteString == "http://192.168.1.10:47921/saves/profiles.json")
+
+        nonisolated(unsafe) var mode = "ok"
+        MockBridgeURLProtocol.handler = { req in
+            let url = req.url?.absoluteString ?? ""
+            if url.hasPrefix("http://primary.invalid") { throw URLError(.cannotFindHost) }
+            guard req.value(forHTTPHeaderField: "Authorization") == "Bearer tok-prof" else {
+                return (HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            switch mode {
+            case "ok":
+                let json = Data(#"[{"id":"default","name":"Luis Felipe"},{"id":"maite","name":"Maite"}]"#.utf8)
+                return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, json)
+            case "404":
+                return (HTTPURLResponse(url: req.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
+            default:
+                return (HTTPURLResponse(url: req.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!, Data())
+            }
+        }
+        defer { MockBridgeURLProtocol.handler = nil }
+
+        let session = makeSession()
+        let fetched = try await CloudSaveSyncService.fetchSaveProfiles(
+            base: "http://primary.invalid:47921/saves", fallback: "http://127.0.0.1:47921/saves", token: "tok-prof", session: session)
+        #expect(fetched == [
+            CloudSaveSyncService.RemoteSaveProfile(id: "default", name: "Luis Felipe"),
+            CloudSaveSyncService.RemoteSaveProfile(id: "maite", name: "Maite"),
+        ])
+
+        mode = "404"
+        let missing = try await CloudSaveSyncService.fetchSaveProfiles(base: "http://127.0.0.1:47921/saves", token: "tok-prof", session: session)
+        #expect(missing == nil)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await CloudSaveSyncService.fetchSaveProfiles(base: "http://127.0.0.1:47921/saves", token: "bad", session: session)
+        }
+    }
+
+    @Test func hostModelIsolatesPerProfileSavesFoldersAndBridgeURLs() async throws {
+        let box = try Sandbox()
+        try box.giveAppData(Fixtures.orbit)
+        let orbitFolder = box.appData.appendingPathComponent(Fixtures.orbit, isDirectory: true)
+        try box.write("luis-save", to: orbitFolder.appendingPathComponent("save/slot.bin"))
+        try box.write("maite-save", to: orbitFolder.appendingPathComponent("profiles/maite/save/slot.bin"))
+
+        let cloudFolder = box.root.appendingPathComponent("iCloudRoot", isDirectory: true)
+        try FileManager.default.createDirectory(at: cloudFolder, withIntermediateDirectories: true)
+
+        let memory = BridgeMemoryStore()
+        MockBridgeURLProtocol.handler = { req in
+            guard req.value(forHTTPHeaderField: "Authorization") == "Bearer tok-multi" else {
+                return (HTTPURLResponse(url: req.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            let path = req.url?.path ?? ""
+            if req.httpMethod == "GET" && path.hasSuffix("/profiles.json") {
+                let json = Data(#"[{"id":"default","name":"Luis Felipe"},{"id":"maite","name":"Maite"}]"#.utf8)
+                return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, json)
+            }
+            if req.httpMethod == "GET" {
+                if let d = memory.get(path) {
+                    return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, d)
+                }
+                return (HTTPURLResponse(url: req.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            if req.httpMethod == "PUT" {
+                var body = Data()
+                if let stream = req.httpBodyStream {
+                    stream.open()
+                    defer { stream.close() }
+                    var buf = [UInt8](repeating: 0, count: 65_536)
+                    while stream.hasBytesAvailable {
+                        let n = stream.read(&buf, maxLength: buf.count)
+                        if n <= 0 { break }
+                        body.append(contentsOf: buf.prefix(n))
+                    }
+                } else if let d = req.httpBody {
+                    body = d
+                }
+                memory.set(path, data: body)
+                return (HTTPURLResponse(url: req.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data())
+            }
+            return (HTTPURLResponse(url: req.url!, statusCode: 405, httpVersion: nil, headerFields: nil)!, Data())
+        }
+        defer { MockBridgeURLProtocol.handler = nil }
+
+        let shell = shellSettings()
+        let launcher = RecordingLauncher()
+        let config = ShellHostConfig(
+            gamesRoot: box.games,
+            appDataRoot: box.appData,
+            environment: HostEnvironment(chain: "b-3f9a2c"),
+            saveBridgeURL: "http://127.0.0.1:47921/saves",
+            saveBridgeToken: "tok-multi",
+            defaults: { box.defaults($0) }
+        )
+        let model = ShellHostModel(config: config, launcher: launcher, shellSettings: shell, urlSession: makeSession())
+        await model.refreshSaveProfilesNow(silent: false)
+        #expect(model.profilesStatus == hostText("Profiles updated from Mac"))
+        #expect(model.saveProfiles.map(\.name) == ["Luis Felipe", "Maite"])
+        #expect(model.activeSaveProfile.id == "default")
+        #expect(model.details.first { $0.id == Fixtures.orbit }?.activeProfileName == "Luis Felipe")
+
+        // Sync + launch as default ("Luis Felipe") uses /saves/<TID>/save.dmsync and <game>/
+        await model.syncCloudSavesNow(Fixtures.orbit)
+        #expect(memory.get("/saves/\(Fixtures.orbit)/save.dmsync") != nil)
+        #expect(memory.get("/saves/profiles/maite/\(Fixtures.orbit)/save.dmsync") == nil)
+        await model.playNow(Fixtures.orbit)
+        #expect(launcher.launched.last?.saveContainerURL?.path == orbitFolder.path)
+        #expect(launcher.launched.last?.saveSyncTarget == "http://127.0.0.1:47921/saves")
+
+        // Switch to Maite -> uses /saves/profiles/maite/<TID>/save.dmsync and <game>/profiles/maite
+        model.selectSaveProfile("maite")
+        #expect(model.activeSaveProfile.name == "Maite")
+        #expect(model.details.first { $0.id == Fixtures.orbit }?.activeProfileName == "Maite")
+        await model.syncCloudSavesNow(Fixtures.orbit)
+        let luisArchive = try #require(memory.get("/saves/\(Fixtures.orbit)/save.dmsync"))
+        let maiteArchive = try #require(memory.get("/saves/profiles/maite/\(Fixtures.orbit)/save.dmsync"))
+        #expect(luisArchive != maiteArchive)
+        await model.playNow(Fixtures.orbit)
+        #expect(launcher.launched.last?.saveContainerURL?.path == orbitFolder.appendingPathComponent("profiles/maite").path)
+        #expect(launcher.launched.last?.saveSyncTarget == "http://127.0.0.1:47921/saves/profiles/maite")
+
+        // Folder sync also isolates default vs custom profile cleanly.
+        let folderSyncDefault = await CloudSaveSyncService.syncGame(titleID: Fixtures.orbit, gameAppFolder: orbitFolder, target: .folder(cloudFolder), profileID: "default")
+        let folderSyncMaite = await CloudSaveSyncService.syncGame(titleID: Fixtures.orbit, gameAppFolder: orbitFolder.appendingPathComponent("profiles/maite"), target: .folder(cloudFolder), profileID: "maite")
+        guard case .uploaded = folderSyncDefault, case .uploaded = folderSyncMaite else {
+            Issue.record("Expected both profile folder syncs to upload"); return
+        }
+        #expect(FileManager.default.fileExists(atPath: cloudFolder.appendingPathComponent("\(Fixtures.orbit)/save.dmsync").path))
+        #expect(FileManager.default.fileExists(atPath: cloudFolder.appendingPathComponent("profiles/maite/\(Fixtures.orbit)/save.dmsync").path))
+    }
 }

@@ -85,4 +85,19 @@ import Testing
         #expect(GameDeletion.removals(in: dir, saves: true).count == 8)
         #expect(GameDeletion.removals(in: dir.appendingPathComponent("missing"), saves: true).isEmpty)
     }
+
+    @Test func deletingKeepsPerProfileSavesUnlessSavesAreDeleted() throws {
+        let box = try Sandbox()
+        let dir = try fill(box)
+        let maiteSave = dir.appendingPathComponent("profiles/maite/save/0/slot.dat")
+        try box.write("maite-progress", to: maiteSave)
+        let model = ShellHostModel(config: box.config())
+        model.deleteGame(Fixtures.orbit, saves: false)
+        #expect(names(dir) == ["profiles", "save", "save.work", "save_device"])
+        #expect(try String(contentsOf: maiteSave, encoding: .utf8) == "maite-progress")
+
+        try box.giveAppData()
+        ShellHostModel(config: box.config()).deleteGame(Fixtures.orbit, saves: true)
+        #expect(!FileManager.default.fileExists(atPath: dir.path))
+    }
 }

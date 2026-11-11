@@ -734,6 +734,9 @@ import NXModel
         XCTAssertEqual(ShellInstall.shellLogCommand(xcrun: "/x", device: "D", bundleID: "b", destination: "/t.txt"),
                        ["/x", "devicectl", "device", "copy", "from", "--device", "D", "--domain-type", "appDataContainer",
                         "--domain-identifier", "b", "--source", "Documents/shell-log.txt", "--destination", "/t.txt"])
+        XCTAssertEqual(ShellInstall.shellLogCommand(xcrun: "/x", device: "D", bundleID: "b", destination: "/t.txt", platform: "tvos"),
+                       ["/x", "devicectl", "device", "copy", "from", "--device", "D", "--domain-type", "appDataContainer",
+                        "--domain-identifier", "b", "--source", "Library/Caches/shell-log.txt", "--destination", "/t.txt"])
         XCTAssertEqual(ShellInstall.freeSpace(inShellLog: "shell: start\nshell: free space 123 bytes\nshell: free space 4567 bytes\nother\n"), 4567)
         XCTAssertNil(ShellInstall.freeSpace(inShellLog: "shell: start\n"))
         XCTAssertNil(ShellInstall.freeSpace(inShellLog: nil))

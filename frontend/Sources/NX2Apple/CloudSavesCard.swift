@@ -27,11 +27,17 @@ struct CloudSavesCard: View {
     var body: some View {
         let _ = revision
         let setting = store.setting
+        let activeProfile = preview == nil ? SaveBridgeProfileStore.activeMacProfileID() : SaveBridgeProfileStore.defaultProfileID
         let check = preview?.check ?? setting.folder.map { CloudSaveSync.check(folder: $0, titleID: game.titleID) }
         VStack(alignment: .leading, spacing: 10) {
             Text(loc.t("cloud.title")).font(.manrope(15, .semibold)).foregroundStyle(.secondary).padding(.leading, 2)
             VStack(alignment: .leading, spacing: 0) {
                 folderRow(setting)
+                if activeProfile != SaveBridgeProfileStore.defaultProfileID,
+                   let profileName = SaveBridgeProfileStore.allProfiles(fallbackDefaultName: loc.t("bridge.defaultProfile")).first(where: { $0.id == activeProfile })?.name {
+                    Divider().opacity(0.25).padding(.leading, 18)
+                    noticeRow("person.crop.circle", String(format: loc.t("cloud.activeProfile"), profileName), LauncherPalette.cream)
+                }
                 if let check, let notice = notice(check) {
                     Divider().opacity(0.25).padding(.leading, 18)
                     notice
@@ -191,8 +197,15 @@ struct CloudSavesCard: View {
         syncNotice = nil
         let tid = game.titleID
         let home = self.home
+        let activeProfile = SaveBridgeProfileStore.activeMacProfileID()
+        let isCustomProfile = activeProfile != SaveBridgeProfileStore.defaultProfileID
+        let syncFolder = isCustomProfile ? SaveBridgeProfileStore.resolvedFolder(for: activeProfile, home: home).path : folder
+        let localDir: URL? = isCustomProfile
+            ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("nxnative/\(tid)/profiles/\(activeProfile)", isDirectory: true)
+            : nil
         DispatchQueue.global(qos: .userInitiated).async {
-            let res = CloudSaveSync.syncNow(titleID: tid, folder: folder, home: home)
+            let res = CloudSaveSync.syncNow(titleID: tid, folder: syncFolder, home: home, localGameDir: localDir)
             DispatchQueue.main.async {
                 isSyncing = false
                 switch res {

@@ -562,11 +562,13 @@ package enum CloudSaveSync {
     }
 
     @discardableResult
-    package static func syncNow(titleID: String, folder: String? = nil, home: String = NSHomeDirectory()) -> SyncResult {
+    package static func syncNow(titleID: String, folder: String? = nil, home: String = NSHomeDirectory(),
+                                localGameDir: URL? = nil) -> SyncResult {
         let id = titleID.uppercased()
-        let localGameDir = URL(fileURLWithPath: home + "/Library/Application Support/nxnative/" + id)
-        let localSavePath = localGameDir.appendingPathComponent("save").path
-        let envURL = localGameDir.appendingPathComponent("env.txt")
+        let baseGameDir = URL(fileURLWithPath: home + "/Library/Application Support/nxnative/" + id)
+        let activeGameDir = localGameDir ?? baseGameDir
+        let localSavePath = activeGameDir.appendingPathComponent("save").path
+        let envURL = baseGameDir.appendingPathComponent("env.txt")
         let curEnv = (try? String(contentsOf: envURL, encoding: .utf8)) ?? ""
 
         let resolvedFolder: String
@@ -577,14 +579,14 @@ package enum CloudSaveSync {
         } else {
             resolvedFolder = defaultICloudFolder(home: home)
             if envLine(curEnv) == nil {
-                try? FileManager.default.createDirectory(at: localGameDir, withIntermediateDirectories: true)
+                try? FileManager.default.createDirectory(at: baseGameDir, withIntermediateDirectories: true)
                 try? settingEnv(curEnv, to: "icloud").write(to: envURL, atomically: true, encoding: .utf8)
             }
         }
 
         let cloudURL = URL(fileURLWithPath: saveFile(folder: resolvedFolder, titleID: id))
         do {
-            let localMeta = try scan(from: localGameDir)
+            let localMeta = try scan(from: activeGameDir)
             let base = readBase(savePath: localSavePath)
             let remoteData = try coordinatedFetch(from: cloudURL)
             var remoteMeta: ArchiveMeta?
@@ -604,7 +606,7 @@ package enum CloudSaveSync {
                 return .upToDate
             case .pull:
                 guard let remoteData, let remoteMeta else { return .noCloudSave }
-                try pullRemoteData(remoteData, into: localGameDir, savePath: localSavePath)
+                try pullRemoteData(remoteData, into: activeGameDir, savePath: localSavePath)
                 writeBase(savePath: localSavePath, hash: remoteMeta.hash)
                 return .downloaded(Date(timeIntervalSince1970: TimeInterval(remoteMeta.saved)))
             case .push:
@@ -612,7 +614,7 @@ package enum CloudSaveSync {
                     let backup = try createBackupDir(savePath: localSavePath, side: "cloud")
                     try unpack(dmsyncData: remoteData, into: backup)
                 }
-                let packed = try pack(from: localGameDir, titleID: id)
+                let packed = try pack(from: activeGameDir, titleID: id)
                 try coordinatedStore(data: packed, to: cloudURL)
                 writeBase(savePath: localSavePath, hash: localMeta.hash)
                 return .uploaded(Date(timeIntervalSince1970: TimeInterval(localMeta.saved)))

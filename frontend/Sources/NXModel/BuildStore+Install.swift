@@ -36,6 +36,7 @@ extension BuildStore {
         installer.saveBridgeURL = bridge.primaryURL()
         installer.saveBridgeFallbackURL = bridge.fallbackURL()
         installer.saveBridgeToken = bridge.token
+        installer.saveProfilesJSON = SaveBridgeProfileStore.encodedJSON(defaults: defaults)
         installer.decideCopy = { plan in target.askCopy(plan) }
         installer.waiting = { on in target.setWaiting(on) }
         installer.waitCancelled = { target.waitCancelled }
@@ -178,9 +179,14 @@ extension BuildStore {
         let python = deps.pythonPath.isEmpty ? Toolchain.findPython().path : deps.pythonPath
         let toolPath = BuildCommands.toolPath("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", python: python)
         let package = ShellInstall.shellPackage(resources: resources, repo: repoPath)
+        let bridge = SaveSyncBridge(defaults: defaults)
+        let platform = app.contains("/Release-appletvos/") ? "tvos" : "ios"
         var env = ShellInstall.projectEnvironment(root: shell.root, frameworks: library.games.map(\.framework), bundleID: bundle,
                                                   team: team, python: python, path: toolPath, home: NSHomeDirectory(), user: NSUserName(),
-                                                  tmp: NSTemporaryDirectory(), package: package)
+                                                  tmp: NSTemporaryDirectory(), package: package, platform: platform,
+                                                  saveBridgeURL: bridge.primaryURL(), saveBridgeFallbackURL: bridge.fallbackURL(),
+                                                  saveBridgeToken: bridge.token,
+                                                  saveProfilesJSON: SaveBridgeProfileStore.encodedJSON(defaults: defaults))
         env.merge(BundledTools.environment(for: python)) { $1 }
         let xcconfig = shell.root + "/project/Gen/dm.xcconfig"
         if (try? String(contentsOfFile: xcconfig, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true

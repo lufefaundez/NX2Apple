@@ -18,6 +18,8 @@ struct CoverFlowView: View, Equatable {
     let openSettings: () -> Void
     let openControllers: () -> Void
     let openShellSettings: () -> Void
+    var activeProfileName: String = ""
+    var openProfiles: () -> Void = {}
     @State private var centredID: String?
     @State private var division: CGRect?
     private var divided: Bool { division != nil }
@@ -35,7 +37,9 @@ struct CoverFlowView: View, Equatable {
     /// not reach the carousel.
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.games.map(\.game) == rhs.games.map(\.game) && lhs.selected.game == rhs.selected.game
-            && lhs.controllers == rhs.controllers && lhs.showsHints == rhs.showsHints && lhs.screenInsets == rhs.screenInsets && lhs.obscured == rhs.obscured
+            && lhs.controllers == rhs.controllers && lhs.showsHints == rhs.showsHints
+            && lhs.activeProfileName == rhs.activeProfileName
+            && lhs.screenInsets == rhs.screenInsets && lhs.obscured == rhs.obscured
     }
 
     var body: some View {
@@ -128,6 +132,7 @@ struct CoverFlowView: View, Equatable {
                 Spacer(minLength: 12)
             }
             if !nativeBars {
+                ProfileChip(name: activeProfileName, action: openProfiles)
                 ControllerChip(count: controllers, action: openControllers)
                 ShellSettingsChip(action: openShellSettings)
             }
@@ -352,5 +357,26 @@ struct ShellSettingsChip: View {
             .accessibilityLabel(ShellStrings.text("Settings"))
             .accessibilityIdentifier("shellSettings.open")
             .shellTarget("lib.shellSettings", radius: 22, action: action)
+    }
+}
+
+/// The active player profile pill, which opens Profiles.
+struct ProfileChip: View {
+    let name: String
+    let action: () -> Void
+    private var resolvedName: String {
+        name.isEmpty ? ShellStrings.text("Default") : name
+    }
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.circle")
+                Text(resolvedName).lineLimit(1).truncationMode(.tail)
+            }
+        }
+        .buttonStyle(ChipButtonStyle())
+        .accessibilityLabel(ShellStrings.text("Player profile") + ": " + resolvedName)
+        .accessibilityIdentifier("profiles.open")
+        .shellTarget("lib.profiles", radius: 22, action: action)
     }
 }

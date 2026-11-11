@@ -177,7 +177,7 @@ struct LauncherView: View {
             } else {
                 CardPages(settings: page == .settings, build: m, updates: updates, repo: repo, engine: engine, dependencies: stores.dependencies, devices: devices,
                           library: library, diagnostics: stores.diagnostics, onViewGame: { page = .library }, onOpenSettings: { page = .settings },
-                          onChooseLibraryFolder: chooseLibraryFolder, onOpenControls: { controlsOpen = true }, onOpenControllers: { controllerSheet = true }, onRunSetup: onRunSetup, controlChanges: controls.changeCount,
+                          onChooseLibraryFolder: chooseLibraryFolder, onOpenControls: { controlsOpen = true }, onOpenControllers: { controllerSheet = true }, onRunSetup: onRunSetup, saveBridge: stores.saveBridge, controlChanges: controls.changeCount,
                           padMerge: Binding(get: { controls.padMerge }, set: { setPadMerge($0) }))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -361,11 +361,10 @@ struct LauncherView: View {
 
     private var topBar: some View {
         HStack(spacing: 6) {
-            // The project is NX2Apple (the user's call: what this fork produces is NX2Apple);
-            // "by nxnative" credits the engine it stands on, which the sketch kept.
+            // The project is NX2Apple (this fork builds NX2Apple by luchetumare).
             VStack(alignment: .leading, spacing: -2) {
                 Text("NX2Apple").font(.manrope(27, .bold)).tracking(-0.8)
-                Text("— by nxnative").font(.manrope(10.5, .medium))
+                Text("— by luchetumare").font(.manrope(10.5, .medium))
                     .foregroundStyle(LauncherPalette.unbuilt).tracking(0.2)
             }
             .fixedSize(horizontal: true, vertical: false)

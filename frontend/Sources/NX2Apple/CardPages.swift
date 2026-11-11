@@ -24,6 +24,7 @@ struct CardPages: View {
     var onOpenControls: () -> Void = {}
     var onOpenControllers: () -> Void = {}   // the Controllers sheet (the console mode's list, with the player-mode setting)
     var onRunSetup: (() -> Void)?   // the guided first-run setup, again (nil where there is none)
+    var saveBridge: SaveSyncBridge? = nil
     var controlChanges = 0
     var padMerge: Binding<Bool> = .constant(false)   // "All controllers are player 1" (ControlLayout.padMerge)
     @State private var extrasOpen = false
@@ -35,7 +36,7 @@ struct CardPages: View {
             if settings {
                 SettingsPage(build: build, updates: updates, repo: repo, engine: engine, dependencies: dependencies, library: library,
                              diagnostics: diagnostics, onChooseLibraryFolder: onChooseLibraryFolder, onOpenControls: onOpenControls,
-                             onOpenControllers: onOpenControllers, onRunSetup: onRunSetup, controlChanges: controlChanges, padMerge: padMerge)
+                             onOpenControllers: onOpenControllers, onRunSetup: onRunSetup, saveBridge: saveBridge, controlChanges: controlChanges, padMerge: padMerge)
             } else {
                 BuildPage(build: build, running: build.running, repo: repo, dependencies: dependencies, devices: devices, extrasOpen: $extrasOpen, logOpen: $logOpen,
                           onViewGame: onViewGame, onOpenSettings: onOpenSettings)

@@ -74,7 +74,10 @@ import NXModel
         laterBuild.value = build
         self.repo = repo; self.engineSync = engineSync; self.dependencies = dependencies; self.deviceStore = devices
         self.appUpdates = updates; self.build = build
-        let bridge = SaveSyncBridge(defaults: defaults)
+        let bridge = SaveSyncBridge(
+            defaults: defaults,
+            profilesProvider: { SaveBridgeProfileStore.allProfiles(defaults: defaults) },
+            profileFolderResolver: { SaveBridgeProfileStore.resolvedFolder(for: $0, defaults: defaults) })
         bridge.start()
         self.saveBridge = bridge
 

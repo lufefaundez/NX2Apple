@@ -49,9 +49,11 @@ struct ShellSettingsView: View {
     @Environment(\.shellNativeBars) private var nativeBars
     var store: ShellSettingsStore = .current
     var actions: ShellActions
+    var activeProfileName: String = ""
     var shellCloudSyncing: Bool = false
     var shellCloudStatus: String = ""
     var bridgeDiscovering: Bool = false
+    var onOpenProfiles: () -> Void = {}
     var onClose: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.shellFocus) private var focus
@@ -77,6 +79,25 @@ struct ShellSettingsView: View {
                                 .shellTarget("shs.close", action: onClose)
                         }
                     }.id("shs.top")
+                }
+
+                Section {
+                    Button(action: onOpenProfiles) {
+                        LabeledContent {
+                            HStack(spacing: 6) {
+                                Text(activeProfileName.isEmpty ? ShellStrings.text("Default") : activeProfileName)
+                                    .lineLimit(1).truncationMode(.tail)
+                                Image(systemName: "chevron.right")
+                                    .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                                    .accessibilityHidden(true)
+                            }
+                        } label: {
+                            Label(ShellStrings.text("Player profile"), systemImage: "person.crop.circle")
+                                .labelStyle(SettingsRowLabelStyle())
+                        }
+                    }
+                    .accessibilityIdentifier("shellSettings.profiles")
+                    .shellTarget("shs.profiles", action: onOpenProfiles)
                 }
 
                 #if !os(tvOS)

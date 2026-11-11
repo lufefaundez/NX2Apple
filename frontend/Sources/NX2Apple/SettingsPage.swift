@@ -18,6 +18,7 @@ struct SettingsPage: View {
     var onOpenControls: () -> Void = {}
     var onOpenControllers: () -> Void = {}   // the Controllers sheet (the console mode's list, with the player-mode setting)
     var onRunSetup: (() -> Void)?   // the guided first-run setup, again (nil where there is none)
+    var saveBridge: SaveSyncBridge? = nil
     var controlChanges = 0
     var padMerge: Binding<Bool> = .constant(false)   // "All controllers are player 1" (ControlLayout.padMerge)
     @AppStorage(ConsolePrompt.defaultsKey) private var consolePromptOn = true   // ConsoleCoordinator.swift
@@ -29,6 +30,7 @@ struct SettingsPage: View {
     var body: some View {
         CardPageHeading(loc.t("settings.heading"), note: loc.t("settings.note"))
         LibraryCard(library: library, onChooseFolder: onChooseLibraryFolder)
+        SaveBridgeCard(saveBridge: saveBridge)
         ControlsCard(controlChanges: controlChanges, padMerge: padMerge, consolePrompt: $consolePromptOn,
                      startInConsole: $startInConsole, onOpenControls: onOpenControls, onOpenControllers: onOpenControllers,
                      onOpenHomeSettings: HomeButtonSettings.available ? { HomeButtonSettings.open() } : nil)   // HomeButtonSettings.swift (#336)

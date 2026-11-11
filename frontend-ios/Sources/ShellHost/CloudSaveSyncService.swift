@@ -25,9 +25,19 @@ public enum CloudSaveSyncService {
         case failed(String)
     }
 
+    public struct RemoteSaveProfile: Codable, Equatable, Identifiable, Sendable {
+        public var id: String
+        public var name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
     public enum RemoteTarget: Equatable, Sendable {
         case folder(URL)
-        case cloudKit(String)
+        case cloudKit(container: String, profileID: String? = nil)
         case http(primary: String, fallback: String?)
     }
 
@@ -654,12 +664,96 @@ public enum CloudSaveSyncService {
 
     // MARK: - Transports (folder, HTTP Save Bridge, CloudKit)
 
-    private static func folderSaveURL(folder: URL, titleID: String) -> URL {
-        let id = titleID.uppercased()
-        if folder.lastPathComponent.uppercased() == id {
-            return folder.appendingPathComponent("save.dmsync")
+    public static func profileBaseURL(_ base: String, profileID: String) -> String {
+        let trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = profileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("cloudkit://") {
+            let rest = String(trimmed.dropFirst("cloudkit://".count))
+            let container = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
+            guard !container.isEmpty else { return trimmed }
+            if pid.isEmpty || pid == "default" {
+                return "cloudkit://\(container)"
+            }
+            return "cloudkit://\(container)/profiles/\(pid)"
         }
-        return folder.appendingPathComponent(id, isDirectory: true).appendingPathComponent("save.dmsync")
+        guard var comps = URLComponents(string: trimmed) else { return trimmed }
+        var path = comps.path
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        if let range = path.range(of: "/profiles/") {
+            path = String(path[..<range.lowerBound])
+        } else if path == "/profiles" {
+            path = ""
+        }
+        if !pid.isEmpty && pid != "default" {
+            path += "/profiles/\(pid)"
+        }
+        comps.path = path.isEmpty ? "/saves" : path
+        return comps.string ?? trimmed
+    }
+
+    public static func profilesEndpointURL(base: String) -> URL? {
+        let root = profileBaseURL(base, profileID: "default")
+        var b = root.trimmingCharacters(in: .whitespacesAndNewlines)
+        while b.count > 1 && b.hasSuffix("/") { b.removeLast() }
+        return URL(string: "\(b)/profiles.json")
+    }
+
+    public static func fetchSaveProfiles(base: String, fallback: String? = nil, token: String? = nil,
+                                         session: URLSession = .shared) async throws -> [RemoteSaveProfile]? {
+        let timeout: TimeInterval = (fallback != nil && fallback != base) ? 4.0 : 6.0
+        do {
+            return try await fetchSaveProfilesOnce(base: base, token: token, timeout: timeout, session: session)
+        } catch let urlErr as URLError {
+            if let fallback, fallback != base, !fallback.isEmpty {
+                return try await fetchSaveProfilesOnce(base: fallback, token: token, timeout: 4.0, session: session)
+            }
+            throw NSError(domain: "DMSync", code: urlErr.errorCode, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
+        }
+    }
+
+    private static func fetchSaveProfilesOnce(base: String, token: String?, timeout: TimeInterval,
+                                              session: URLSession) async throws -> [RemoteSaveProfile]? {
+        guard let url = profilesEndpointURL(base: base) else {
+            throw NSError(domain: "DMSync", code: 10, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+        request.httpMethod = "GET"
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "DMSync", code: 11, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
+        }
+        switch http.statusCode {
+        case 200:
+            return try JSONDecoder().decode([RemoteSaveProfile].self, from: data)
+        case 404:
+            return nil
+        case 401, 403:
+            throw NSError(domain: "DMSync", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: hostText("Access key rejected")])
+        default:
+            throw NSError(domain: "DMSync", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: hostText("Save server error (\(String(http.statusCode)))")])
+        }
+    }
+
+    private static func folderSaveURL(folder: URL, titleID: String, profileID: String = "default") -> URL {
+        let id = titleID.uppercased()
+        let pid = profileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseFolder: URL
+        if !pid.isEmpty && pid != "default" {
+            if folder.lastPathComponent == pid && folder.deletingLastPathComponent().lastPathComponent == "profiles" {
+                baseFolder = folder
+            } else {
+                baseFolder = folder.appendingPathComponent("profiles", isDirectory: true).appendingPathComponent(pid, isDirectory: true)
+            }
+        } else {
+            baseFolder = folder
+        }
+        if baseFolder.lastPathComponent.uppercased() == id {
+            return baseFolder.appendingPathComponent("save.dmsync")
+        }
+        return baseFolder.appendingPathComponent(id, isDirectory: true).appendingPathComponent("save.dmsync")
     }
 
     private static func coordinatedFetch(from url: URL) throws -> Data? {
@@ -707,28 +801,28 @@ public enum CloudSaveSyncService {
         try writeResult.get()
     }
 
-    private static func endpointURL(base: String, titleID: String) -> URL? {
-        var b = base.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func endpointURL(base: String, titleID: String, profileID: String = "default") -> URL? {
+        var b = profileBaseURL(base, profileID: profileID).trimmingCharacters(in: .whitespacesAndNewlines)
         while b.count > 1 && b.hasSuffix("/") { b.removeLast() }
         return URL(string: "\(b)/\(titleID.uppercased())/save.dmsync")
     }
 
-    private static func httpFetch(base: String, fallback: String?, titleID: String, token: String?, session: URLSession) async throws -> (data: Data?, preferredBase: String) {
+    private static func httpFetch(base: String, fallback: String?, titleID: String, profileID: String, token: String?, session: URLSession) async throws -> (data: Data?, preferredBase: String) {
         let timeout: TimeInterval = (fallback != nil && fallback != base) ? 4.0 : 8.0
         do {
-            let data = try await httpFetchOnce(base: base, titleID: titleID, token: token, timeout: timeout, session: session)
+            let data = try await httpFetchOnce(base: base, titleID: titleID, profileID: profileID, token: token, timeout: timeout, session: session)
             return (data, base)
         } catch let urlErr as URLError {
             if let fallback, fallback != base, !fallback.isEmpty {
-                let data = try await httpFetchOnce(base: fallback, titleID: titleID, token: token, timeout: 4.0, session: session)
+                let data = try await httpFetchOnce(base: fallback, titleID: titleID, profileID: profileID, token: token, timeout: 4.0, session: session)
                 return (data, fallback)
             }
             throw NSError(domain: "DMSync", code: urlErr.errorCode, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
         }
     }
 
-    private static func httpFetchOnce(base: String, titleID: String, token: String?, timeout: TimeInterval, session: URLSession) async throws -> Data? {
-        guard let url = endpointURL(base: base, titleID: titleID) else {
+    private static func httpFetchOnce(base: String, titleID: String, profileID: String, token: String?, timeout: TimeInterval, session: URLSession) async throws -> Data? {
+        guard let url = endpointURL(base: base, titleID: titleID, profileID: profileID) else {
             throw NSError(domain: "DMSync", code: 10, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
         }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
@@ -752,21 +846,21 @@ public enum CloudSaveSyncService {
         }
     }
 
-    private static func httpStore(data: Data, base: String, fallback: String?, titleID: String, token: String?, session: URLSession) async throws {
+    private static func httpStore(data: Data, base: String, fallback: String?, titleID: String, profileID: String, token: String?, session: URLSession) async throws {
         let timeout: TimeInterval = (fallback != nil && fallback != base) ? 5.0 : 10.0
         do {
-            try await httpStoreOnce(data: data, base: base, titleID: titleID, token: token, timeout: timeout, session: session)
+            try await httpStoreOnce(data: data, base: base, titleID: titleID, profileID: profileID, token: token, timeout: timeout, session: session)
         } catch let urlErr as URLError {
             if let fallback, fallback != base, !fallback.isEmpty {
-                try await httpStoreOnce(data: data, base: fallback, titleID: titleID, token: token, timeout: 5.0, session: session)
+                try await httpStoreOnce(data: data, base: fallback, titleID: titleID, profileID: profileID, token: token, timeout: 5.0, session: session)
                 return
             }
             throw NSError(domain: "DMSync", code: urlErr.errorCode, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
         }
     }
 
-    private static func httpStoreOnce(data: Data, base: String, titleID: String, token: String?, timeout: TimeInterval, session: URLSession) async throws {
-        guard let url = endpointURL(base: base, titleID: titleID) else {
+    private static func httpStoreOnce(data: Data, base: String, titleID: String, profileID: String, token: String?, timeout: TimeInterval, session: URLSession) async throws {
+        guard let url = endpointURL(base: base, titleID: titleID, profileID: profileID) else {
             throw NSError(domain: "DMSync", code: 10, userInfo: [NSLocalizedDescriptionKey: hostText("Save server unreachable")])
         }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
@@ -789,17 +883,30 @@ public enum CloudSaveSyncService {
         }
     }
 
-    private static func parseCloudKitContainer(_ target: String) -> String? {
+    private static func parseCloudKitTarget(_ target: String) -> (container: String, profileID: String?)? {
         guard target.hasPrefix("cloudkit://") else { return nil }
         let rest = String(target.dropFirst("cloudkit://".count))
-        let container = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
-        return container.isEmpty ? nil : container
+        let parts = rest.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard let container = parts.first, !container.isEmpty else { return nil }
+        if parts.count >= 3 && parts[1] == "profiles" {
+            return (container, parts[2].lowercased())
+        }
+        return (container, nil)
     }
 
-    private static func cloudKitFetch(containerID: String, titleID: String) async throws -> Data? {
+    private static func cloudKitRecordID(titleID: String, profileID: String?) -> String {
+        let id = titleID.uppercased()
+        let pid = (profileID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pid.isEmpty && pid != "default" {
+            return "save-\(pid)-\(id)"
+        }
+        return "save-\(id)"
+    }
+
+    private static func cloudKitFetch(containerID: String, titleID: String, profileID: String?) async throws -> Data? {
         #if canImport(CloudKit)
         let db = CKContainer(identifier: containerID).privateCloudDatabase
-        let rid = CKRecord.ID(recordName: "save-\(titleID.uppercased())")
+        let rid = CKRecord.ID(recordName: cloudKitRecordID(titleID: titleID, profileID: profileID))
         do {
             let record = try await db.record(for: rid)
             guard let asset = record["bundle"] as? CKAsset, let fileURL = asset.fileURL else {
@@ -814,11 +921,11 @@ public enum CloudSaveSyncService {
         #endif
     }
 
-    private static func cloudKitStore(data: Data, containerID: String, titleID: String) async throws {
+    private static func cloudKitStore(data: Data, containerID: String, titleID: String, profileID: String?) async throws {
         #if canImport(CloudKit)
         let id = titleID.uppercased()
         let db = CKContainer(identifier: containerID).privateCloudDatabase
-        let rid = CKRecord.ID(recordName: "save-\(id)")
+        let rid = CKRecord.ID(recordName: cloudKitRecordID(titleID: titleID, profileID: profileID))
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("dmsync-ck-\(id)-\(UUID().uuidString).dmsync")
         try data.write(to: tmp, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tmp) }
@@ -845,9 +952,10 @@ public enum CloudSaveSyncService {
         }
     }
 
-    public static func syncGame(titleID: String, gameAppFolder: URL, target: RemoteTarget, token: String? = nil,
-                                session: URLSession = .shared) async -> SyncOutcome {
+    public static func syncGame(titleID: String, gameAppFolder: URL, target: RemoteTarget, profileID: String = "default",
+                                token: String? = nil, session: URLSession = .shared) async -> SyncOutcome {
         let id = titleID.uppercased()
+        let resolvedProfileID = profileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : profileID.trimmingCharacters(in: .whitespacesAndNewlines)
         let localSavePath = gameAppFolder.appendingPathComponent("save").path
         do {
             let localMeta = try await Task.detached(priority: .userInitiated) {
@@ -860,14 +968,15 @@ public enum CloudSaveSyncService {
             var fallbackHTTPBase: String?
             switch target {
             case .folder(let folderURL):
-                let fileURL = folderSaveURL(folder: folderURL, titleID: id)
+                let fileURL = folderSaveURL(folder: folderURL, titleID: id, profileID: resolvedProfileID)
                 remoteData = try await Task.detached(priority: .userInitiated) {
                     try coordinatedFetch(from: fileURL)
                 }.value
-            case .cloudKit(let container):
-                remoteData = try await cloudKitFetch(containerID: container, titleID: id)
+            case .cloudKit(let container, let explicitProfile):
+                let pid = resolvedProfileID != "default" ? resolvedProfileID : explicitProfile
+                remoteData = try await cloudKitFetch(containerID: container, titleID: id, profileID: pid)
             case .http(let primary, let fallback):
-                let fetched = try await httpFetch(base: primary, fallback: fallback, titleID: id, token: token, session: session)
+                let fetched = try await httpFetch(base: primary, fallback: fallback, titleID: id, profileID: resolvedProfileID, token: token, session: session)
                 remoteData = fetched.data
                 activeHTTPBase = fetched.preferredBase
                 fallbackHTTPBase = (fetched.preferredBase == primary) ? fallback : primary
@@ -912,14 +1021,15 @@ public enum CloudSaveSyncService {
                 }.value
                 switch target {
                 case .folder(let folderURL):
-                    let fileURL = folderSaveURL(folder: folderURL, titleID: id)
+                    let fileURL = folderSaveURL(folder: folderURL, titleID: id, profileID: resolvedProfileID)
                     try await Task.detached(priority: .userInitiated) {
                         try coordinatedStore(data: packed, to: fileURL)
                     }.value
-                case .cloudKit(let container):
-                    try await cloudKitStore(data: packed, containerID: container, titleID: id)
+                case .cloudKit(let container, let explicitProfile):
+                    let pid = resolvedProfileID != "default" ? resolvedProfileID : explicitProfile
+                    try await cloudKitStore(data: packed, containerID: container, titleID: id, profileID: pid)
                 case .http(let primary, _):
-                    try await httpStore(data: packed, base: activeHTTPBase ?? primary, fallback: fallbackHTTPBase, titleID: id, token: token, session: session)
+                    try await httpStore(data: packed, base: activeHTTPBase ?? primary, fallback: fallbackHTTPBase, titleID: id, profileID: resolvedProfileID, token: token, session: session)
                 }
                 writeBase(savePath: localSavePath, hash: localMeta.hash)
                 return .uploaded(Date(timeIntervalSince1970: TimeInterval(localMeta.saved)))
@@ -931,8 +1041,8 @@ public enum CloudSaveSyncService {
 
     public static func makeRemoteTarget(target: String?, fallback: String?) -> RemoteTarget? {
         guard let target = normalizeBridgeURL(target) else { return nil }
-        if target.hasPrefix("cloudkit://"), let container = parseCloudKitContainer(target) {
-            return .cloudKit(container)
+        if target.hasPrefix("cloudkit://"), let (container, ckProfile) = parseCloudKitTarget(target) {
+            return .cloudKit(container: container, profileID: ckProfile)
         }
         if target.hasPrefix("http://") || target.hasPrefix("https://") {
             let normFallback = normalizeBridgeURL(fallback)

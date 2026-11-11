@@ -10,7 +10,8 @@ import NXLauncher
 enum GameStart {
     @MainActor static func environment(for game: LibraryGame, library: GameLibrary, controls: ControlLayout, repo: String,
                                        labels: (String) -> String, fullscreen: Bool = false,
-                                       screen: NSScreen? = NSApp?.keyWindow?.screen ?? NSScreen.main) -> [String: String] {
+                                       screen: NSScreen? = NSApp?.keyWindow?.screen ?? NSScreen.main,
+                                       defaults: UserDefaults = .standard) -> [String: String] {
         library.migrateLaunchOptions()
         CloudSavesMigration.run()   // before the app reads its env.txt: DM_SAVE_SYNC=icloud keeps the folder the iPhone app uses
         let settings = LaunchSetting.forMac(app: game.appPath, titleID: game.titleID, repo: repo, labels: labels) ?? []
@@ -22,6 +23,14 @@ enum GameStart {
                                                 store: SavedChoices(app: game.appPath, titleID: game.titleID),
                                                 appReadsStore: SavedChoices.appReadsStore(app: game.appPath),
                                                 controllerStore: mappings, savingEnabled: savingEnabled)
+        let activeProfile = SaveBridgeProfileStore.activeMacProfileID(defaults: defaults)
+        if activeProfile != SaveBridgeProfileStore.defaultProfileID {
+            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            let profileSave = support.appendingPathComponent("nxnative/\(game.titleID)/profiles/\(activeProfile)/save", isDirectory: true)
+            try? FileManager.default.createDirectory(at: profileSave, withIntermediateDirectories: true)
+            environment["DM_SAVE"] = profileSave.path
+            environment["DM_SAVE_SYNC"] = SaveBridgeProfileStore.resolvedFolder(for: activeProfile, defaults: defaults).path
+        }
         if fullscreen, settings.contains(where: { $0.env == "DM_FULLSCREEN" }) { environment["DM_FULLSCREEN"] = "1" }
         if let id = displayID(of: screen) { environment["DM_SCREEN"] = String(id) }
         environment["DM_HOME_QUIT_TEXT"] = HomeButtonHint.promptText(gameName: game.name, labels: labels)   // the game's Home button quit prompt in the launcher's language (#336)

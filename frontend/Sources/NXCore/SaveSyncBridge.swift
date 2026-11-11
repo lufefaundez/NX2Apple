@@ -15,11 +15,15 @@ package final class SaveSyncBridge: @unchecked Sendable {
 
     package let port: UInt16
     package let token: String
+    package let defaults: UserDefaults
     private let savesRootOverride: URL?
+    private let profilesProvider: @Sendable () -> [SaveBridgeProfile]
+    private let profileFolderResolver: @Sendable (String) -> URL
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "org.nxnative.save-bridge", qos: .utility)
     private let portLock = NSLock()
     private var _boundPort: UInt16
+    private var _listening = false
     package var onReady: (@Sendable (UInt16) -> Void)?
 
     package var boundPort: UInt16 {
@@ -28,11 +32,26 @@ package final class SaveSyncBridge: @unchecked Sendable {
         return _boundPort
     }
 
+    package var isRunning: Bool {
+        portLock.lock()
+        defer { portLock.unlock() }
+        return _listening
+    }
+
     package init(port: UInt16 = SaveSyncBridge.defaultPort, token: String? = nil,
-                 defaults: UserDefaults = .standard, savesRoot: URL? = nil) {
+                 defaults: UserDefaults = .standard, savesRoot: URL? = nil,
+                 profilesProvider: (@Sendable () -> [SaveBridgeProfile])? = nil,
+                 profileFolderResolver: (@Sendable (String) -> URL)? = nil) {
         self.port = port
         self._boundPort = port
+        self.defaults = defaults
         self.savesRootOverride = savesRoot
+        self.profilesProvider = profilesProvider ?? {
+            SaveBridgeProfileStore.allProfiles(defaults: defaults)
+        }
+        self.profileFolderResolver = profileFolderResolver ?? { profileID in
+            SaveBridgeProfileStore.resolvedFolder(for: profileID, defaults: defaults, baseRoot: savesRoot)
+        }
         if let token, !token.isEmpty {
             self.token = token
         } else if let saved = defaults.string(forKey: Self.tokenKey), !saved.isEmpty {
@@ -92,12 +111,23 @@ package final class SaveSyncBridge: @unchecked Sendable {
                 self?.handleConnection(connection)
             }
             l.stateUpdateHandler = { [weak self] state in
-                guard let self, case .ready = state, let actual = l.port?.rawValue else { return }
-                self.portLock.lock()
-                self._boundPort = actual
-                let callback = self.onReady
-                self.portLock.unlock()
-                callback?(actual)
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    guard let actual = l.port?.rawValue else { return }
+                    self.portLock.lock()
+                    self._boundPort = actual
+                    self._listening = true
+                    let callback = self.onReady
+                    self.portLock.unlock()
+                    callback?(actual)
+                case .failed, .cancelled:
+                    self.portLock.lock()
+                    self._listening = false
+                    self.portLock.unlock()
+                default:
+                    break
+                }
             }
             l.start(queue: queue)
             self.listener = l
@@ -107,6 +137,9 @@ package final class SaveSyncBridge: @unchecked Sendable {
     }
 
     package func stop() {
+        portLock.lock()
+        _listening = false
+        portLock.unlock()
         listener?.cancel()
         listener = nil
     }
@@ -183,18 +216,47 @@ package final class SaveSyncBridge: @unchecked Sendable {
             return
         }
         let subpath = String(path.dropFirst("/saves/".count))
+        if subpath == "profiles.json" {
+            guard method == "GET" else {
+                sendResponse(connection, status: 405, message: "Method Not Allowed")
+                return
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let publicList = profilesProvider().map { SaveBridgeProfile(id: $0.id, name: $0.name, folderPath: nil) }
+            guard let jsonData = try? encoder.encode(publicList) else {
+                sendResponse(connection, status: 500, message: "Encoding Error")
+                return
+            }
+            sendDataResponse(connection, data: jsonData, contentType: "application/json")
+            return
+        }
+
         let pathParts = subpath.split(separator: "/", omittingEmptySubsequences: false)
-        guard pathParts.count == 2,
-              !pathParts[0].isEmpty,
-              pathParts[0] != ".",
-              pathParts[0] != "..",
-              pathParts[1] == "save.dmsync" else {
+        let titleID: String
+        let profileRoot: URL
+        if pathParts.count == 2,
+           !pathParts[0].isEmpty,
+           pathParts[0] != ".",
+           pathParts[0] != "..",
+           pathParts[1] == "save.dmsync" {
+            titleID = String(pathParts[0]).uppercased()
+            profileRoot = savesRootOverride ?? Self.savesRoot()
+        } else if pathParts.count == 4,
+                  pathParts[0] == "profiles",
+                  SaveProfileValidation.isValidID(String(pathParts[1])),
+                  !pathParts[2].isEmpty,
+                  pathParts[2] != ".",
+                  pathParts[2] != "..",
+                  pathParts[3] == "save.dmsync" {
+            let profileID = String(pathParts[1])
+            titleID = String(pathParts[2]).uppercased()
+            profileRoot = profileFolderResolver(profileID)
+        } else {
             sendResponse(connection, status: 400, message: "Invalid Save Path")
             return
         }
-        let titleID = String(pathParts[0]).uppercased()
-        let root = savesRootOverride ?? Self.savesRoot()
-        let gameSaveDir = root.appendingPathComponent(titleID, isDirectory: true)
+        let gameSaveDir = profileRoot.appendingPathComponent(titleID, isDirectory: true)
         let saveFile = gameSaveDir.appendingPathComponent("save.dmsync")
 
         if method == "GET" {
@@ -304,8 +366,8 @@ package final class SaveSyncBridge: @unchecked Sendable {
         connection.send(content: Data(resp.utf8), completion: .contentProcessed({ _ in connection.cancel() }))
     }
 
-    private func sendDataResponse(_ connection: NWConnection, data: Data) {
-        let headers = "HTTP/1.1 200 OK\r\nContent-Length: \(data.count)\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n"
+    private func sendDataResponse(_ connection: NWConnection, data: Data, contentType: String = "application/octet-stream") {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Length: \(data.count)\r\nContent-Type: \(contentType)\r\nConnection: close\r\n\r\n"
         var full = Data(headers.utf8)
         full.append(data)
         connection.send(content: full, completion: .contentProcessed({ _ in connection.cancel() }))

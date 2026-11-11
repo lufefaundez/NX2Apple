@@ -41,6 +41,10 @@ public struct LibraryView: View {
     public let shellCloudSyncing: Bool
     public let shellCloudStatus: String
     public let bridgeDiscovering: Bool
+    public let saveProfiles: [SaveProfile]
+    public let activeSaveProfile: SaveProfile?
+    public let profilesRefreshing: Bool
+    public let profilesStatus: String
     public var actions: ShellActions
     public var input: ShellInputLog
     /// The sequence of the last input event acted on.
@@ -52,6 +56,7 @@ public struct LibraryView: View {
     /// Counts the opening and closing of the settings pane, so a wait for one opening does not act on a later one.
     @State private var settingsOpenings = 0
     @State private var shellSettingsOpen: Bool
+    @State private var profilesOpen: Bool
     @State private var controllersOpen: Bool
     /// The game whose How to fix or How to update explanation is open.
     @State private var helpGameID: String?
@@ -89,7 +94,10 @@ public struct LibraryView: View {
                 initialControllersOpen: Bool = false, initialShellSettingsOpen: Bool = false, initialFocusVisible: Bool = false,
                 globalPadMap: PadMap = PadMap(), padSnapshot: PadSnapshot? = nil,
                 initialPadMapping: String? = nil, initialButtonTestOpen: Bool = false,
-                shellCloudSyncing: Bool = false, shellCloudStatus: String = "", bridgeDiscovering: Bool = false) {
+                shellCloudSyncing: Bool = false, shellCloudStatus: String = "", bridgeDiscovering: Bool = false,
+                saveProfiles: [SaveProfile] = [], activeSaveProfile: SaveProfile? = nil,
+                profilesRefreshing: Bool = false, profilesStatus: String = "",
+                initialProfilesOpen: Bool = false) {
         ShellPalette.configureNativeAppearance()
         self.games = games
         self.controllers = controllers
@@ -98,6 +106,10 @@ public struct LibraryView: View {
         self.shellCloudSyncing = shellCloudSyncing
         self.shellCloudStatus = shellCloudStatus
         self.bridgeDiscovering = bridgeDiscovering
+        self.saveProfiles = saveProfiles
+        self.activeSaveProfile = activeSaveProfile
+        self.profilesRefreshing = profilesRefreshing
+        self.profilesStatus = profilesStatus
         _padMapping = State(initialValue: initialPadMapping.map { PadMappingState(gameID: $0) })
         _buttonTestOpen = State(initialValue: initialButtonTestOpen)
         self.actions = actions
@@ -109,10 +121,17 @@ public struct LibraryView: View {
         _settingsArrived = State(initialValue: initialDetailOpen)
         _controllersOpen = State(initialValue: initialControllersOpen)
         _shellSettingsOpen = State(initialValue: initialShellSettingsOpen)
+        _profilesOpen = State(initialValue: initialProfilesOpen)
         _focus = State(initialValue: FocusAppearance(id: initialFocusVisible ? "lib.tile.\(first ?? "")" : nil, visible: initialFocusVisible))
         _touchMode = State(initialValue: !initialFocusVisible)
     }
     private var selected: GameDetail? { games.first { $0.id == selectedID } ?? games.first }
+    private var resolvedActiveProfile: SaveProfile {
+        activeSaveProfile ?? SaveProfile(id: ShellSettingsStore.defaultProfileID, name: ShellStrings.text("Default"))
+    }
+    private var resolvedProfiles: [SaveProfile] {
+        saveProfiles.isEmpty ? [resolvedActiveProfile] : saveProfiles
+    }
 
     public var body: some View {
         NavigationStack {
@@ -174,7 +193,7 @@ public struct LibraryView: View {
                     .presentationBackground(ShellPalette.background)
                     .presentationContentInteraction(touchLayout != nil ? .scrolls : .automatic)
                     .interactiveDismissDisabled(touchLayout != nil)
-                    .modifier(MenuPlacement(divided: divisionAxis == .vertical, secondary: controllersOpen || shellSettingsOpen))
+                    .modifier(MenuPlacement(divided: divisionAxis == .vertical, secondary: controllersOpen || shellSettingsOpen || profilesOpen))
                     .modifier(ShellKeyboardNavigation(active: touchLayout == nil && padMapping?.row == nil) { handle($0, from: .keyboard) })
             }
 
@@ -197,6 +216,7 @@ public struct LibraryView: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: settingsOpen)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: controllersOpen)
         .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: shellSettingsOpen)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: profilesOpen)
         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: helpGameID)
         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: deleteGameID)
         .animation(reduceMotion ? nil : .smooth(duration: 0.25), value: choice)
@@ -246,7 +266,7 @@ public struct LibraryView: View {
     }
 
     private var menuPresented: Bool {
-        touchLayout != nil || settingsOpen || controllersOpen || shellSettingsOpen || helpGameID != nil
+        touchLayout != nil || settingsOpen || controllersOpen || shellSettingsOpen || profilesOpen || helpGameID != nil
             || deleteGameID != nil || choice != nil || padMapping != nil || buttonTestOpen
     }
 
@@ -277,6 +297,7 @@ public struct LibraryView: View {
         padMapping = nil
         helpGameID = nil
         deleteGameID = nil
+        profilesOpen = false
         controllersOpen = false
         shellSettingsOpen = false
         settingsOpen = false
@@ -345,16 +366,28 @@ public struct LibraryView: View {
             ZStack {
                 if settingsOpen, let selected {
                     settingsPane(selected, width: geometry.size.width)
-                        .accessibilityHidden(controllersOpen || shellSettingsOpen || choice != nil || padMapping != nil || helpGameID != nil || deleteGameID != nil)
+                        .accessibilityHidden(controllersOpen || shellSettingsOpen || profilesOpen || choice != nil || padMapping != nil || helpGameID != nil || deleteGameID != nil)
                 }
                 if controllersOpen {
                     ControllersView(controllers: controllers, onBack: back, padMap: globalPadMap)
                         .background(ShellPalette.background)
-                        .accessibilityHidden(choice != nil || padMapping != nil || buttonTestOpen)
+                        .accessibilityHidden(choice != nil || padMapping != nil || buttonTestOpen || profilesOpen)
                 }
                 if shellSettingsOpen {
-                    ShellSettingsView(actions: menuActions, shellCloudSyncing: shellCloudSyncing, shellCloudStatus: shellCloudStatus,
-                                      bridgeDiscovering: bridgeDiscovering, onClose: closeShellSettings)
+                    ShellSettingsView(actions: menuActions, activeProfileName: resolvedActiveProfile.name,
+                                      shellCloudSyncing: shellCloudSyncing, shellCloudStatus: shellCloudStatus,
+                                      bridgeDiscovering: bridgeDiscovering, onOpenProfiles: openProfiles, onClose: closeShellSettings)
+                        .background(ShellPalette.background)
+                        .accessibilityHidden(choice != nil || profilesOpen)
+                }
+                if profilesOpen {
+                    ProfilesView(profiles: resolvedProfiles, activeProfileID: resolvedActiveProfile.id,
+                                 refreshing: profilesRefreshing, statusText: profilesStatus,
+                                 onSelect: { menuActions.onSelectSaveProfile($0) },
+                                 onAdd: { menuActions.onAddSaveProfile($0) },
+                                 onRemove: { menuActions.onRemoveSaveProfile($0) },
+                                 onRefresh: { menuActions.onRefreshSaveProfiles() },
+                                 onClose: closeProfiles)
                         .background(ShellPalette.background)
                         .accessibilityHidden(choice != nil)
                 }
@@ -388,12 +421,13 @@ public struct LibraryView: View {
     }
 
     private var tabletopSettings: Bool {
-        horizontalDivision && settingsOpen && !controllersOpen && !shellSettingsOpen && choice == nil
+        horizontalDivision && settingsOpen && !controllersOpen && !shellSettingsOpen && !profilesOpen && choice == nil
             && padMapping == nil && !buttonTestOpen && helpGameID == nil && deleteGameID == nil
     }
 
     private var menuTitle: String {
         guard choice == nil, padMapping == nil, !buttonTestOpen, helpGameID == nil, deleteGameID == nil else { return "" }
+        if profilesOpen { return ShellStrings.text("Player profile") }
         if controllersOpen { return ShellStrings.text("Controllers") }
         if shellSettingsOpen { return ShellStrings.text("Settings") }
         return settingsOpen && (horizontalDivision || !settingsHeroVisible) ? selected?.game.title ?? "" : ""
@@ -403,13 +437,14 @@ public struct LibraryView: View {
         if layout.isCoverFlow {
             CoverFlowView(games: games, selected: selected, controllers: controllers.count, showsHints: !touchMode, obscured: menuPresented, screenInsets: insets,
                           select: select, primary: { primary($0) }, openSettings: openSettings, openControllers: openControllers,
-                          openShellSettings: openShellSettings)
+                          openShellSettings: openShellSettings, activeProfileName: resolvedActiveProfile.name, openProfiles: openProfiles)
                 .equatable()
                 .transition(.opacity)
         } else {
             PortraitLibrary(games: games, selected: selected, wide: layout == .grid, size: size, topInset: insets.top, bottomInset: insets.bottom, obscured: menuPresented,
                             controllers: controllers.count, select: select, primary: { primary($0) },
                             openSettings: openSettings, openControllers: openControllers, openShellSettings: openShellSettings,
+                            activeProfileName: resolvedActiveProfile.name, openProfiles: openProfiles,
                             position: $libraryPosition)
                 .equatable()
                 .transition(.opacity)
@@ -483,7 +518,7 @@ public struct LibraryView: View {
             }
         }
         if settingsOpen, helpGameID == nil, deleteGameID == nil, choice == nil, padMapping == nil,
-           !controllersOpen, !shellSettingsOpen, let selected {
+           !controllersOpen, !shellSettingsOpen, !profilesOpen, let selected {
             ToolbarItem(placement: .primaryAction) {
                 toolbarButton(selected.game.state.actionTitle, selected.game.state.actionSymbol, "state.action", "set.play") { primary(selected, fromSettings: true) }
                     .labelStyle(.iconOnly)
@@ -535,6 +570,15 @@ public struct LibraryView: View {
             #endif
         }
 
+        if let item = libraryActions.first(where: { $0.id == "profiles.open" }) {
+            ToolbarItem(placement: .primaryAction) {
+                toolbarButton(ShellStrings.text(item.title), item.symbol, item.id, item.target, item.action)
+                    .disabled(menuPresented).accessibilityHidden(menuPresented)
+            }
+            #if !os(tvOS)
+            ToolbarSpacer(.fixed, placement: .primaryAction)
+            #endif
+        }
         if let item = libraryActions.first(where: { $0.id == "controllers.open" }) {
             controllerItem(item)
             #if !os(tvOS)
@@ -568,6 +612,11 @@ public struct LibraryView: View {
         }
         if helpGameID != nil { return [.init(title: settingsOpen ? "Game settings" : "Close", symbol: settingsOpen ? "chevron.left" : "xmark", id: "help.done", target: "help.done", placement: .close, action: closeHelp)] }
         if deleteGameID != nil { return [] }
+        if profilesOpen {
+            return [.init(title: shellSettingsOpen ? "Back" : "Close",
+                          symbol: shellSettingsOpen ? "chevron.left" : "xmark",
+                          id: "profiles.close", target: "prf.close", placement: .close, action: closeProfiles)]
+        }
         if controllersOpen { return [.init(title: "Close controllers", symbol: "xmark", id: "controllers.close", target: "ctl.close", placement: .close, action: back)] }
         if shellSettingsOpen { return [.init(title: "Close", symbol: "xmark", id: "shellSettings.close", target: "shs.close", placement: .close, action: closeShellSettings)] }
         if settingsOpen { return [.init(title: "Close", symbol: "xmark", id: "library.back", target: "set.back", placement: .close, action: closeSettings)] }
@@ -576,6 +625,7 @@ public struct LibraryView: View {
 
     private var libraryActions: [ToolbarAction] {
         var items: [ToolbarAction] = []
+        items.append(.init(title: "Player profile", symbol: "person.crop.circle", id: "profiles.open", target: "lib.profiles", placement: .actions, action: openProfiles))
         items.append(.init(title: "Controllers", symbol: controllers.isEmpty ? "gamecontroller" : "gamecontroller.fill", id: "controllers.open", target: "lib.controllers", placement: .actions, action: openControllers))
         items.append(.init(title: "Settings", symbol: "gearshape", id: "shellSettings.open", target: "lib.shellSettings", placement: .actions, action: openShellSettings))
         return items
@@ -585,7 +635,14 @@ public struct LibraryView: View {
 
     private func toolbarButton(_ label: String, _ symbol: String, _ identifier: String, _ target: String,
                                _ action: @escaping () -> Void) -> some View {
-        let accessibilityLabel = identifier == "controllers.open" ? label + ", \(controllers.count)" : label
+        let accessibilityLabel: String
+        if identifier == "controllers.open" {
+            accessibilityLabel = label + ", \(controllers.count)"
+        } else if identifier == "profiles.open" {
+            accessibilityLabel = label + ": " + resolvedActiveProfile.name
+        } else {
+            accessibilityLabel = label
+        }
         return Button { if !fromSystemEcho { action() } } label: {
             if identifier == "controllers.open" {
                 ZStack(alignment: .topTrailing) {
@@ -600,6 +657,16 @@ public struct LibraryView: View {
                                 .allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
+            } else if identifier == "profiles.open" {
+                HStack(spacing: 5) {
+                    Image(systemName: symbol)
+                    Text(resolvedActiveProfile.name)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 88, alignment: .leading)
+                }
+                .foregroundStyle(.white)
             } else { Label(label, systemImage: symbol) }
         }
             .accessibilityLabel(accessibilityLabel)
@@ -620,6 +687,7 @@ public struct LibraryView: View {
         else if touchLayout != nil { prefix = "lay." }
         else if helpGameID != nil { prefix = "help." }
         else if deleteGameID != nil { prefix = "del." }
+        else if profilesOpen { prefix = "prf." }
         else if controllersOpen { prefix = "ctl." }
         else if shellSettingsOpen { prefix = "shs." }
         else if settingsOpen { prefix = "set." }
@@ -661,6 +729,10 @@ public struct LibraryView: View {
         a.onSyncAllCloudSaves = { if !echo() { o.onSyncAllCloudSaves() } }
         a.onSaveBridgeChange = { if !echo() { o.onSaveBridgeChange($0, $1) } }
         a.onDiscoverSaveBridge = { if !echo() { o.onDiscoverSaveBridge() } }
+        a.onSelectSaveProfile = { if !echo() { o.onSelectSaveProfile($0) } }
+        a.onAddSaveProfile = { if !echo() { o.onAddSaveProfile($0) } }
+        a.onRemoveSaveProfile = { if !echo() { o.onRemoveSaveProfile($0) } }
+        a.onRefreshSaveProfiles = { if !echo() { o.onRefreshSaveProfiles() } }
         return a
     }
     /// An action that did not come from a controller or key came from touch: hints and focus ring step back. False when
@@ -698,7 +770,7 @@ public struct LibraryView: View {
         settingsPosition.scrollTo(edge: .top)
     }
     private func openSettings() {
-        guard !shellSettingsOpen else { return }
+        guard !shellSettingsOpen && !profilesOpen else { return }
         guard noteTouch() else { return }
         controllersOpen = false
         settingsOpen = true
@@ -709,9 +781,15 @@ public struct LibraryView: View {
         settingsOpen = false
         focus.id = "lib.settings"
     }
-    private func openControllers() { guard !shellSettingsOpen else { return }; guard noteTouch() else { return }; controllersOpen = true; focus.id = "ctl.close" }
-    private func openShellSettings() { guard noteTouch() else { return }; shellSettingsOpen = true; focus.id = "shs.close" }
+    private func openControllers() { guard !shellSettingsOpen && !profilesOpen else { return }; guard noteTouch() else { return }; controllersOpen = true; focus.id = "ctl.close" }
+    private func openShellSettings() { guard !profilesOpen else { return }; guard noteTouch() else { return }; shellSettingsOpen = true; focus.id = "shs.close" }
     private func closeShellSettings() { guard !fromSystemEcho else { return }; shellSettingsOpen = false; focus.id = "lib.shellSettings" }
+    private func openProfiles() { guard noteTouch() else { return }; profilesOpen = true; focus.id = "prf.close" }
+    private func closeProfiles() {
+        guard !fromSystemEcho else { return }
+        profilesOpen = false
+        focus.id = shellSettingsOpen ? "shs.profiles" : "lib.profiles"
+    }
     private func openTouchLayout(_ window: CGSize, _ insets: EdgeInsets) {
         guard noteTouch() else { return }
         touchLayout = TouchLayoutEditorModel.forDevice(window: window, insets: insets)
@@ -818,6 +896,7 @@ public struct LibraryView: View {
         }
         else if helpGameID != nil { closeHelp() }
         else if deleteGameID != nil { closeDelete() }
+        else if profilesOpen { closeProfiles() }
         else if controllersOpen { controllersOpen = false; focus.id = settingsOpen ? "set.back" : "lib.controllers" }
         else if shellSettingsOpen { closeShellSettings() }
         else if settingsOpen { closeSettings() }
@@ -867,6 +946,7 @@ public struct LibraryView: View {
         if padMapping != nil { return .padMapping }
         if choice != nil { return .choice }
         if touchLayout != nil { return .touchLayout }
+        if profilesOpen { return .profiles }
         if controllersOpen { return .controllers }
         if shellSettingsOpen { return .shellSettings }
         if helpGameID != nil { return .help }
@@ -888,6 +968,7 @@ public struct LibraryView: View {
         if touchLayout != nil { return activeTargets.contains { $0.id == "lay.done" } ? "lay.done" : "lay.options" }
         if helpGameID != nil { return "help.done" }
         if deleteGameID != nil { return "del.cancel" }
+        if profilesOpen { return "prf.close" }
         if controllersOpen { return "ctl.close" }
         if shellSettingsOpen { return "shs.close" }
         if settingsOpen { return "set.back" }

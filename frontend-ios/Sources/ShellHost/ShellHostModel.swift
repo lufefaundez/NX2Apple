@@ -19,6 +19,7 @@ public struct ShellHostConfig: Sendable {
     public var saveBridgeURL: String?
     public var saveBridgeFallbackURL: String?
     public var saveBridgeToken: String?
+    public var saveProfilesJSON: String?
     public var defaults: @Sendable (String) -> UserDefaults
     public var openURL: @MainActor @Sendable (URL) -> Void
     /// The clock, for the last-played date and its wording.
@@ -29,7 +30,8 @@ public struct ShellHostConfig: Sendable {
                 saveBridgeFallbackURL: String? = nil, saveBridgeToken: String? = nil,
                 defaults: @escaping @Sendable (String) -> UserDefaults = GameDefaults.suite(for:),
                 openURL: @escaping @MainActor @Sendable (URL) -> Void = ShellHostConfig.systemOpen,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                saveProfilesJSON: String? = nil) {
         self.gamesRoot = gamesRoot
         self.appDataRoot = appDataRoot
         self.environment = environment
@@ -38,6 +40,7 @@ public struct ShellHostConfig: Sendable {
         self.saveBridgeURL = saveBridgeURL
         self.saveBridgeFallbackURL = saveBridgeFallbackURL
         self.saveBridgeToken = saveBridgeToken
+        self.saveProfilesJSON = saveProfilesJSON
         self.defaults = defaults
         self.openURL = openURL
         self.now = now
@@ -100,6 +103,11 @@ public struct ShellHostConfig: Sendable {
     public private(set) var shellCloudSyncing = false
     public private(set) var shellCloudStatus = ""
     public private(set) var bridgeDiscovering = false
+    /// Per-user save profiles (`default` + custom profiles synced with Mac).
+    public private(set) var saveProfiles: [SaveProfile] = []
+    public private(set) var activeSaveProfile: SaveProfile = SaveProfile(id: ShellSettingsStore.defaultProfileID, name: hostText("Default"))
+    public private(set) var profilesRefreshing = false
+    public private(set) var profilesStatus = ""
 
     public private(set) var globalPadMap = PadMap()
     /// The last controller state, sent only while the button test is open.
@@ -138,8 +146,10 @@ public struct ShellHostConfig: Sendable {
         self.discoverBridge = discoverBridge
         shellData = BookmarkStore(defaults: shellSettings.defaults, key: ShellSettingsStore.dataFolderKey)
         shellCloud = BookmarkStore(defaults: shellSettings.defaults, key: ShellSettingsStore.cloudSavesKey)
+        shellSettings.seedSaveProfiles(fromJSON: config.saveProfilesJSON)
         shellChoices = Self.choices(of: shellSettings)
         globalPadMap = shellSettings.padMap
+        syncProfileState()
         // Game files stay out of the iCloud backup (#618), also what an earlier version put there. Off the main actor, it lists folders.
         let dataRoot = config.appDataRoot
         Task.detached(priority: .utility) { BackupExclusion.apply(appDataRoot: dataRoot) }
@@ -158,12 +168,22 @@ public struct ShellHostConfig: Sendable {
             settings.padMap.envValue ?? "",
             settings.saveBridgeURL ?? "",
             settings.saveBridgeToken ?? "",
+            settings.defaultProfileName ?? "",
+            settings.activeSaveProfileID,
+            settings.customSaveProfiles.map { "\($0.id)=\($0.name)" }.joined(separator: ","),
         ]
+    }
+
+    private func syncProfileState() {
+        let fallbackDefault = hostText("Default")
+        saveProfiles = shellSettings.saveProfiles(defaultName: fallbackDefault)
+        activeSaveProfile = shellSettings.activeSaveProfile(defaultName: fallbackDefault)
     }
 
     /// Rebuilds the details in place after a shell folder, overlay or controller mapping changes.
     public func refreshAll() {
         globalPadMap = shellSettings.padMap
+        syncProfileState()
         shellChoices = Self.choices(of: shellSettings)
         startShellScan()
         details = entries.map(detail(for:))
@@ -231,6 +251,15 @@ public struct ShellHostConfig: Sendable {
     private func entry(_ id: String) -> CatalogueEntry? { entries.first { $0.id == id } }
 
     public func appFolder(for id: String) -> URL { config.appDataRoot.appendingPathComponent(id, isDirectory: true) }
+
+    public func saveContainer(for id: String, profileID: String? = nil) -> URL {
+        let resolved = (profileID ?? shellSettings.activeSaveProfileID).trimmingCharacters(in: .whitespacesAndNewlines)
+        let app = appFolder(for: id)
+        if resolved.isEmpty || resolved == ShellSettingsStore.defaultProfileID {
+            return app
+        }
+        return app.appendingPathComponent("profiles", isDirectory: true).appendingPathComponent(resolved, isDirectory: true)
+    }
 
     private func dataStore(_ id: String) -> BookmarkStore {
         if let s = dataStores[id] { return s }
@@ -344,7 +373,8 @@ public struct ShellHostConfig: Sendable {
             dataFromShell: data.source == .shell, cloudFromShell: cloudFromShell,
             cloudCanUseShell: shellFolder && !cloudFromShell,
             cloudSyncing: syncingGames.contains(entry.id),
-            cloudSyncStatus: gameSyncStatus[entry.id] ?? "")
+            cloudSyncStatus: gameSyncStatus[entry.id] ?? "",
+            activeProfileName: activeSaveProfile.name)
     }
 
     private func dataSource(_ data: DataResolution) -> String {
@@ -402,7 +432,11 @@ public struct ShellHostConfig: Sendable {
             onSyncCloudSaves: { [weak self] id in self?.syncCloudSaves(id) },
             onSyncAllCloudSaves: { [weak self] in self?.syncAllCloudSaves() },
             onSaveBridgeChange: { [weak self] url, token in self?.saveBridgeChanged(url: url, token: token) },
-            onDiscoverSaveBridge: { [weak self] in self?.discoverSaveBridge() })
+            onDiscoverSaveBridge: { [weak self] in self?.discoverSaveBridge() },
+            onSelectSaveProfile: { [weak self] id in self?.selectSaveProfile(id) },
+            onAddSaveProfile: { [weak self] name in self?.addSaveProfile(name: name) },
+            onRemoveSaveProfile: { [weak self] id in self?.removeSaveProfile(id: id) },
+            onRefreshSaveProfiles: { [weak self] in self?.refreshSaveProfiles() })
     }
 
     public func change(_ id: String, setting: String, value: String) {
@@ -505,6 +539,84 @@ public struct ShellHostConfig: Sendable {
 
     // MARK: Manual cloud save sync & Save Bridge
 
+    public func selectSaveProfile(_ id: String) {
+        guard id != shellSettings.activeSaveProfileID else { return }
+        shellSettings.storeActiveSaveProfileID(id)
+        gameSyncStatus.removeAll()
+        shellCloudStatus = ""
+        refreshAll()
+    }
+
+    @discardableResult
+    public func addSaveProfile(name: String) -> SaveProfile? {
+        guard let created = shellSettings.addSaveProfile(name: name) else { return nil }
+        shellSettings.storeActiveSaveProfileID(created.id)
+        gameSyncStatus.removeAll()
+        shellCloudStatus = ""
+        profilesStatus = ""
+        refreshAll()
+        return created
+    }
+
+    public func removeSaveProfile(id: String) {
+        let wasActive = shellSettings.activeSaveProfileID == id
+        shellSettings.removeSaveProfile(id: id)
+        if wasActive {
+            gameSyncStatus.removeAll()
+            shellCloudStatus = ""
+        }
+        refreshAll()
+    }
+
+    public func refreshSaveProfiles() {
+        Task { await refreshSaveProfilesNow(silent: false) }
+    }
+
+    public func refreshSaveProfilesNow(silent: Bool = false) async {
+        guard !profilesRefreshing else { return }
+        guard let target = effectiveSaveSyncTarget else {
+            if !silent { profilesStatus = hostText("Connect to a Mac save server first.") }
+            return
+        }
+        let fallback = effectiveSaveSyncFallback
+        let httpPrimary: String
+        let httpFallback: String?
+        if let norm = CloudSaveSyncService.normalizeBridgeURL(target),
+           norm.hasPrefix("http://") || norm.hasPrefix("https://") {
+            httpPrimary = norm
+            let normFb = CloudSaveSyncService.normalizeBridgeURL(fallback)
+            httpFallback = (normFb?.hasPrefix("http://") == true || normFb?.hasPrefix("https://") == true) ? normFb : nil
+        } else if let normFb = CloudSaveSyncService.normalizeBridgeURL(fallback),
+                  normFb.hasPrefix("http://") || normFb.hasPrefix("https://") {
+            httpPrimary = normFb
+            httpFallback = nil
+        } else {
+            if !silent { profilesStatus = hostText("Connect to a Mac save server first.") }
+            return
+        }
+
+        profilesRefreshing = true
+        if !silent { profilesStatus = "" }
+        defer { profilesRefreshing = false }
+        do {
+            let remote = try await CloudSaveSyncService.fetchSaveProfiles(
+                base: httpPrimary, fallback: httpFallback, token: effectiveSaveSyncToken, session: urlSession)
+            if let remote, !remote.isEmpty {
+                let mapped = remote.map { SaveProfile(id: $0.id, name: $0.name) }
+                if shellSettings.mergeIncomingProfiles(mapped) {
+                    refreshAll()
+                } else {
+                    syncProfileState()
+                }
+                if !silent { profilesStatus = hostText("Profiles updated from Mac") }
+            } else if !silent {
+                profilesStatus = hostText("No custom profiles on Mac yet")
+            }
+        } catch {
+            if !silent { profilesStatus = hostText("Could not refresh profiles: \(error.localizedDescription)") }
+        }
+    }
+
     private func remoteTarget(for id: String) -> CloudSaveSyncService.RemoteTarget? {
         switch cloudSaves(id) {
         case .own(let url), .shell(let url):
@@ -544,6 +656,7 @@ public struct ShellHostConfig: Sendable {
             shellSettings.storeSaveBridgeURL(found)
             shellCloudStatus = hostText("Found Mac on Wi-Fi")
             refreshAll()
+            await refreshSaveProfilesNow(silent: true)
         } else {
             shellCloudStatus = hostText("No Mac found on Wi-Fi")
         }
@@ -565,12 +678,13 @@ public struct ShellHostConfig: Sendable {
             refresh(id)
             return
         }
+        let activeID = shellSettings.activeSaveProfileID
         syncingGames.insert(id)
         gameSyncStatus[id] = ""
         refresh(id)
         let outcome = await CloudSaveSyncService.syncGame(
-            titleID: id, gameAppFolder: appFolder(for: id), target: target,
-            token: effectiveSaveSyncToken, session: urlSession)
+            titleID: id, gameAppFolder: saveContainer(for: id, profileID: activeID), target: target,
+            profileID: activeID, token: effectiveSaveSyncToken, session: urlSession)
         syncingGames.remove(id)
         gameSyncStatus[id] = CloudSaveSyncService.statusMessage(for: outcome)
         refresh(id)
@@ -584,6 +698,7 @@ public struct ShellHostConfig: Sendable {
         guard !shellCloudSyncing else { return }
         shellCloudSyncing = true
         shellCloudStatus = ""
+        await refreshSaveProfilesNow(silent: true)
         let targets: [(id: String, target: CloudSaveSyncService.RemoteTarget)] = entries.compactMap { entry in
             guard let t = remoteTarget(for: entry.id) else { return nil }
             return (entry.id, t)
@@ -593,14 +708,15 @@ public struct ShellHostConfig: Sendable {
             shellCloudStatus = hostText("No save destination configured")
             return
         }
+        let activeID = shellSettings.activeSaveProfileID
         var outcomes: [CloudSaveSyncService.SyncOutcome] = []
         for (id, target) in targets {
             if syncingGames.contains(id) { continue }
             syncingGames.insert(id)
             refresh(id)
             let outcome = await CloudSaveSyncService.syncGame(
-                titleID: id, gameAppFolder: appFolder(for: id), target: target,
-                token: effectiveSaveSyncToken, session: urlSession)
+                titleID: id, gameAppFolder: saveContainer(for: id, profileID: activeID), target: target,
+                profileID: activeID, token: effectiveSaveSyncToken, session: urlSession)
             syncingGames.remove(id)
             gameSyncStatus[id] = CloudSaveSyncService.statusMessage(for: outcome)
             refresh(id)
@@ -683,15 +799,27 @@ public struct ShellHostConfig: Sendable {
               let profile = profile(for: entry, data: resolved) else { return }
         launchingGame = true
         defer { launchingGame = false }
+        let activeID = shellSettings.activeSaveProfileID
+        let saveContainerURL = saveContainer(for: id, profileID: activeID)
+        let isCustomProfile = activeID != ShellSettingsStore.defaultProfileID
         var cloud: URL?
         var remoteTarget: String?
         var remoteFallback: String?
         var remoteToken: String?
         switch cloudSaves(id) {
-        case .own(let url), .shell(let url): cloud = url
+        case .own(let url), .shell(let url):
+            if isCustomProfile {
+                if url.lastPathComponent == activeID && url.deletingLastPathComponent().lastPathComponent == "profiles" {
+                    cloud = url
+                } else {
+                    cloud = url.appendingPathComponent("profiles", isDirectory: true).appendingPathComponent(activeID, isDirectory: true)
+                }
+            } else {
+                cloud = url
+            }
         case .none:
-            remoteTarget = effectiveSaveSyncTarget
-            remoteFallback = effectiveSaveSyncFallback
+            remoteTarget = effectiveSaveSyncTarget.map { CloudSaveSyncService.profileBaseURL($0, profileID: activeID) }
+            remoteFallback = effectiveSaveSyncFallback.map { CloudSaveSyncService.profileBaseURL($0, profileID: activeID) }
             remoteToken = effectiveSaveSyncToken
         case .off, .stale: break
         }
@@ -701,7 +829,8 @@ public struct ShellHostConfig: Sendable {
         var game = LaunchableGame(
             titleID: id, name: entry.title, manifest: manifest, directory: entry.directory, frameworkURL: framework, dataURL: dataURL,
             appFolder: appFolder(for: id), environment: launchEnvironment(profile: profile, id: id), cloudSavesURL: cloud,
-            saveSyncTarget: remoteTarget, saveSyncFallback: remoteFallback, saveSyncToken: remoteToken)
+            saveSyncTarget: remoteTarget, saveSyncFallback: remoteFallback, saveSyncToken: remoteToken,
+            saveContainerURL: saveContainerURL)
         do {
             game.shaderResourcesURL = try await ShaderResources.shared.prepare(game)
             try await launcher.launch(game)

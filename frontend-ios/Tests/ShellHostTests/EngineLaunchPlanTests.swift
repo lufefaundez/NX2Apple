@@ -256,4 +256,24 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: rig.gdir.path + "/cheats"))
         try plan.createFolders()
     }
+
+    @Test func saveContainerURLRoutesDMSavePerProfileWhileKeepingGameFilesShared() throws {
+        var rig = try Rig()
+        try rig.box.write("x", to: rig.gdir.appendingPathComponent("profile.tsv"))
+        try rig.box.write("DM_TRACE=5\n", to: rig.gdir.appendingPathComponent("env.txt"))
+        try rig.box.makeFolder(rig.gdir.appendingPathComponent("mods/m/romfs"))
+        let maiteRoot = rig.gdir.appendingPathComponent("profiles/maite", isDirectory: true)
+        rig.game.saveContainerURL = maiteRoot
+
+        let plan = rig.plan()
+        #expect(plan.environment["DM_SAVE"] == maiteRoot.path + "/save")
+        #expect(plan.environment["DM_TEMP"] == rig.gdir.path + "/temp")
+        #expect(plan.environment["DM_CHEATS"] == rig.gdir.path + "/cheats")
+        #expect(plan.environment["DM_PROFILE"] == rig.gdir.path + "/profile.tsv")
+        #expect(plan.environment["DM_TRACE"] == "5")
+        #expect(plan.environment["DM_ROMFS_OVERLAY"] == rig.gdir.path + "/mods/m/romfs")
+        #expect(plan.foldersToCreate.map(\.path) == [maiteRoot.path + "/save", rig.gdir.path + "/temp"])
+        try plan.createFolders()
+        #expect(FileManager.default.fileExists(atPath: maiteRoot.appendingPathComponent("save").path))
+    }
 }

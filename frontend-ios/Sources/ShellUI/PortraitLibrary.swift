@@ -39,6 +39,8 @@ struct PortraitLibrary: View, Equatable {
     let openSettings: () -> Void
     let openControllers: () -> Void
     let openShellSettings: () -> Void
+    var activeProfileName: String = ""
+    var openProfiles: () -> Void = {}
     @Binding var position: ScrollPosition
     @Namespace private var actionGlassNamespace
     @Namespace private var poseNamespace
@@ -78,7 +80,7 @@ struct PortraitLibrary: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.games.map(\.game) == rhs.games.map(\.game) && lhs.selected.game == rhs.selected.game && lhs.wide == rhs.wide
             && lhs.size == rhs.size && lhs.topInset == rhs.topInset && lhs.bottomInset == rhs.bottomInset
-            && lhs.controllers == rhs.controllers && lhs.obscured == rhs.obscured
+            && lhs.controllers == rhs.controllers && lhs.activeProfileName == rhs.activeProfileName && lhs.obscured == rhs.obscured
     }
 
     private var expanded: Bool { wide || ShellLayout.resolve(size, accessibilityText: false) == .grid }
@@ -146,6 +148,7 @@ struct PortraitLibrary: View, Equatable {
                 .overlay(alignment: .topTrailing) {
                     if !nativeBars {
                         HStack(spacing: 10) {
+                            ProfileChip(name: activeProfileName, action: openProfiles)
                             ControllerChip(count: controllers, action: openControllers)
                             ShellSettingsChip(action: openShellSettings)
                         }.padding(.top, 6).padding(.trailing, 16)

@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 22:11:16 -0300
+Subject: [PATCH] Fix tvOS framework sigaltstack guard and xcodegen spec root
+ path
+
+Upstream-Status: pending
+Reason: Fix tvOS framework sigaltstack guard and xcodegen spec root path
+Issue: lufefaundez/NX2Apple#10
+
+---
+ dm/ios/framework/ShellGlue.m | 2 ++
+ dm/ios/tools/build_ipa.sh    | 2 +-
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/dm/ios/framework/ShellGlue.m b/dm/ios/framework/ShellGlue.m
+index 23f98dd..26bce2c 100644
+--- a/dm/ios/framework/ShellGlue.m
++++ b/dm/ios/framework/ShellGlue.m
+@@ -54,7 +54,9 @@ void dm_glue_focus_event(int ev) {
+ // ---- what front_ios.m takes from main.m and Launcher.swift ----
+ static void *boot_thread(void *p) {
+     (void)p;
++#if !TARGET_OS_TV
+     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
++#endif
+     int rc = dm_main(g_argc, g_argv);
+     fprintf(stderr, "boot: dm_main returned %d\n", rc);
+     return NULL;
+diff --git a/dm/ios/tools/build_ipa.sh b/dm/ios/tools/build_ipa.sh
+index 651368f..0695fa9 100755
+--- a/dm/ios/tools/build_ipa.sh
++++ b/dm/ios/tools/build_ipa.sh
+@@ -268,7 +268,7 @@ for raw in open(src, encoding='utf-8').read().splitlines():
+         out += [f'{pad}- ProfileName: DirectionalGamepad', f'{pad}- ProfileName: MicroGamepad']
+ open(dst, 'w', encoding='utf-8').write('\n'.join(out) + '\n')
+ PY
+-  xcodegen generate -q --spec Gen/project-tvos.yml > /dev/null || die "xcodegen"
++  xcodegen generate -q --spec Gen/project-tvos.yml --project . --project-root . > /dev/null || die "xcodegen"
+ elif [ "$SPEC_IN" = project.yml ]; then xcodegen generate -q > /dev/null || die "xcodegen"
+ else xcodegen generate -q --spec project-framework.yml > /dev/null || die "xcodegen"; fi
+ # DMCommit / DMChain: the checkout that built the app (+dirty with uncommitted changes to tracked files) and the shader chain it carries, which the host logs at start (main.c)

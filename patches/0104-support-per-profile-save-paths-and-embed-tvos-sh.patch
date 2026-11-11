@@ -1,0 +1,170 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lufefaundez <245535282+lufefaundez@users.noreply.github.com>
+Date: Tue, 10 Nov 2026 21:15:43 -0300
+Subject: [PATCH] Support per-profile save paths and embed tvOS shell
+ name/profiles in Info.plist
+
+Upstream-Status: pending
+Reason: Support per-profile save paths in CloudKit/HTTP fallback and embed tvOS shell name/profiles in Info.plist
+Issue: lufefaundez/NX2Apple#10
+---
+ dm/host/save_sync_remote.m  | 48 ++++++++++++++++++++++++++++---------
+ dm/ios/Shell/ShellApp.swift |  6 ++++-
+ dm/ios/tools/build_shell.sh |  7 +++---
+ 3 files changed, 46 insertions(+), 15 deletions(-)
+
+diff --git a/dm/host/save_sync_remote.m b/dm/host/save_sync_remote.m
+index 15d74a6..b94bd16 100644
+--- a/dm/host/save_sync_remote.m
++++ b/dm/host/save_sync_remote.m
+@@ -1,6 +1,6 @@
+ // Remote transports for cloud save sync (dm/host/save_sync.h):
+-//   1. cloudkit://<container>/<title ID>/save.dmsync — private CloudKit database (Paid Apple Developer accounts on iOS, tvOS and macOS)
+-//   2. http(s)://<host>:<port>/saves/<title ID>/save.dmsync — LAN / HTTP save bridge backed by Mac iCloud Drive (Personal Teams on tvOS and iOS)
++//   1. cloudkit://<container>/<title ID>/save.dmsync (or .../profiles/<id>/<title ID>/save.dmsync) — private CloudKit database (Paid Apple Developer accounts on iOS, tvOS and macOS)
++//   2. http(s)://<host>:<port>/saves/<title ID>/save.dmsync (or .../profiles/<id>/<title ID>/save.dmsync) — LAN / HTTP save bridge backed by Mac iCloud Drive (Personal Teams on tvOS and iOS)
+ // Auth token for HTTP is read from DM_SAVE_SYNC_TOKEN and sent in Authorization: Bearer <token> so secrets never appear in URLs or logs.
+ // If DM_SAVE_SYNC_FALLBACK is set and the primary HTTP host cannot be reached (e.g. .local mDNS timeout), one retry goes to the fallback base URL.
+ #import <CloudKit/CloudKit.h>
+@@ -14,27 +14,42 @@ int dm_save_sync_remote_is_url(const char *cloud) {
+     return cloud && (!strncmp(cloud, "cloudkit://", 11) || !strncmp(cloud, "http://", 7) || !strncmp(cloud, "https://", 8));
+ }
+ 
+-static BOOL parse_cloudkit(const char *cloud, NSString **containerOut, NSString **titleOut) {
++static BOOL parse_cloudkit(const char *cloud, NSString **containerOut, NSString **profileOut, NSString **titleOut) {
+     if (!cloud || strncmp(cloud, "cloudkit://", 11)) return NO;
+     NSString *rest = @(cloud + 11);
+     NSArray<NSString *> *parts = [rest componentsSeparatedByString:@"/"];
+     if (parts.count < 2) return NO;
+     NSString *container = parts[0];
+-    NSString *title = parts[1].uppercaseString;
++    NSString *profile = nil;
++    NSString *title = nil;
++    if (parts.count >= 4 && [parts[1] isEqualToString:@"profiles"]) {
++        profile = parts[2].lowercaseString;
++        title = parts[3].uppercaseString;
++    } else {
++        title = parts[1].uppercaseString;
++    }
+     if (!container.length || !title.length) return NO;
+     *containerOut = container;
++    if (profileOut) *profileOut = profile;
+     *titleOut = title;
+     return YES;
+ }
+ 
++static CKRecordID *cloudkit_record_id(NSString *profile, NSString *title) {
++    NSString *name = (profile.length && ![profile isEqualToString:@"default"])
++        ? [NSString stringWithFormat:@"save-%@-%@", profile, title]
++        : [NSString stringWithFormat:@"save-%@", title];
++    return [[CKRecordID alloc] initWithRecordName:name];
++}
++
+ static int cloudkit_fetch(const char *cloud, const char *local) {
+-    NSString *container = nil, *title = nil;
+-    if (!parse_cloudkit(cloud, &container, &title)) {
++    NSString *container = nil, *profile = nil, *title = nil;
++    if (!parse_cloudkit(cloud, &container, &profile, &title)) {
+         fprintf(stderr, "[dm] [RED] save sync: invalid CloudKit URL %s\n", cloud);
+         return -1;
+     }
+     CKDatabase *db = [CKContainer containerWithIdentifier:container].privateCloudDatabase;
+-    CKRecordID *rid = [[CKRecordID alloc] initWithRecordName:[NSString stringWithFormat:@"save-%@", title]];
++    CKRecordID *rid = cloudkit_record_id(profile, title);
+     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+     __block int result = -1;
+     [db fetchRecordWithID:rid completionHandler:^(CKRecord *rec, NSError *err) {
+@@ -64,13 +79,13 @@ static int cloudkit_fetch(const char *cloud, const char *local) {
+ }
+ 
+ static int cloudkit_store(const char *local, const char *cloud) {
+-    NSString *container = nil, *title = nil;
+-    if (!parse_cloudkit(cloud, &container, &title)) {
++    NSString *container = nil, *profile = nil, *title = nil;
++    if (!parse_cloudkit(cloud, &container, &profile, &title)) {
+         fprintf(stderr, "[dm] [RED] save sync: invalid CloudKit URL %s\n", cloud);
+         return 0;
+     }
+     CKDatabase *db = [CKContainer containerWithIdentifier:container].privateCloudDatabase;
+-    CKRecordID *rid = [[CKRecordID alloc] initWithRecordName:[NSString stringWithFormat:@"save-%@", title]];
++    CKRecordID *rid = cloudkit_record_id(profile, title);
+     CKRecord *rec = [[CKRecord alloc] initWithRecordType:@"NXSave" recordID:rid];
+     rec[@"bundle"] = [[CKAsset alloc] initWithFileURL:[NSURL fileURLWithPath:@(local)]];
+     rec[@"title"] = title;
+@@ -113,12 +128,23 @@ static NSString *fallback_http_url(NSString *primary) {
+     if (baseEnv && *baseEnv) {
+         NSString *base = strip_slashes(@(baseEnv));
+         if (base.length && [primary hasPrefix:base]) {
+-            NSString *cand = [fbBase stringByAppendingString:[primary substringFromIndex:base.length]];
++            NSRange baseProf = [base rangeOfString:@"/profiles/"];
++            NSRange fbProf = [fbBase rangeOfString:@"/profiles/"];
++            NSUInteger sliceAt = (baseProf.location != NSNotFound && fbProf.location == NSNotFound) ? baseProf.location : base.length;
++            NSString *cand = [fbBase stringByAppendingString:[primary substringFromIndex:sliceAt]];
+             return [cand isEqualToString:primary] ? nil : cand;
+         }
+     }
+     NSURL *u = [NSURL URLWithString:primary];
+     NSArray<NSString *> *parts = u.pathComponents;
++    if (parts.count >= 4 && [parts[parts.count - 4] isEqualToString:@"profiles"]) {
++        NSString *tail = [NSString stringWithFormat:@"/profiles/%@/%@/%@", parts[parts.count - 3], parts[parts.count - 2], parts.lastObject];
++        NSString *prefix = fbBase;
++        NSRange fbProf = [prefix rangeOfString:@"/profiles/"];
++        if (fbProf.location != NSNotFound) prefix = [prefix substringToIndex:fbProf.location];
++        NSString *cand = [prefix stringByAppendingString:tail];
++        return [cand isEqualToString:primary] ? nil : cand;
++    }
+     if (parts.count >= 2) {
+         NSString *tail = [NSString stringWithFormat:@"/%@/%@", parts[parts.count - 2], parts.lastObject];
+         NSString *cand = [fbBase stringByAppendingString:tail];
+diff --git a/dm/ios/Shell/ShellApp.swift b/dm/ios/Shell/ShellApp.swift
+index b98c9a3..e97dc96 100644
+--- a/dm/ios/Shell/ShellApp.swift
++++ b/dm/ios/Shell/ShellApp.swift
+@@ -60,13 +60,17 @@ private func withCStrings<R>(_ strings: [String], _ body: (UnsafePointer<UnsafeP
+                                      cloudKitContainer: nonEmpty("DMCloudKitContainer"),
+                                      saveBridgeURL: nonEmpty("DMSaveBridgeURL"),
+                                      saveBridgeFallbackURL: nonEmpty("DMSaveBridgeFallbackURL"),
+-                                     saveBridgeToken: nonEmpty("DMSaveBridgeToken"))
++                                     saveBridgeToken: nonEmpty("DMSaveBridgeToken"),
++                                     saveProfilesJSON: nonEmpty("DMSaveProfiles"))
+         #if os(tvOS)
+         let model = ShellHostModel(config: config, launcher: EngineGameLauncher(), picker: NoFolderPicker())
+         #else
+         let model = ShellHostModel(config: config, launcher: EngineGameLauncher(), picker: DocumentFolderPicker())
+         #endif
+         model.startControllers()
++        if config.remoteSaveSyncTarget != nil || model.shellSettings.saveBridgeURL != nil {
++            Task { await model.refreshSaveProfilesNow(silent: true) }
++        }
+         for entry in model.entries {
+             fputs("shell: game \(entry.id) \(entry.title) at \(entry.frameworkURL?.lastPathComponent ?? "-")\(entry.problem.map { ", broken: \($0.reason), \($0.detail)" } ?? "")\n", stderr)
+         }
+diff --git a/dm/ios/tools/build_shell.sh b/dm/ios/tools/build_shell.sh
+index 7b8bbf6..c435633 100755
+--- a/dm/ios/tools/build_shell.sh
++++ b/dm/ios/tools/build_shell.sh
+@@ -39,7 +39,8 @@ case "$DM_PLATFORM" in
+   *) die "unsupported DM_PLATFORM=$DM_PLATFORM (expected ios or tvos)" ;;
+ esac
+ export DM_PLATFORM
+-export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.shell} DM_TEAM_ID=${DM_TEAM_ID:-0000000000} DM_SHELL_NAME=${DM_SHELL_NAME:-NX2Apple} DM_APP_VERSION=${DM_APP_VERSION:-1.0}
++DEFAULT_SHELL_NAME=NX2Apple; [ "$DM_PLATFORM" = tvos ] && DEFAULT_SHELL_NAME="NX2Apple TV"
++export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.shell} DM_TEAM_ID=${DM_TEAM_ID:-0000000000} DM_SHELL_NAME=${DM_SHELL_NAME:-$DEFAULT_SHELL_NAME} DM_APP_VERSION=${DM_APP_VERSION:-1.0}
+ export DM_FORK_PATCHES=$(paste -sd, "$DM/fork_patches.txt" 2>/dev/null || true)
+ DD=${DM_XCODE_DERIVED_DATA:-$S/dd}; mkdir -p "$DD" && DD=$(cd "$DD" && pwd)
+ V=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$DM/gfx/nvn/dmsh_chain.h"); [ -n "$V" ] || die "no DMSH_CHAIN in dm/gfx/nvn/dmsh_chain.h"
+@@ -134,12 +135,12 @@ COMMIT=$(git -C "$DM" rev-parse --short=12 HEAD 2> /dev/null) && { [ -z "$(git -
+   /usr/libexec/PlistBuddy -c "Add :DMCommit string $COMMIT" Gen/Info.plist > /dev/null || die "DMCommit"; t "source: $COMMIT"; }
+ /usr/libexec/PlistBuddy -c "Add :DMChain string $V" Gen/Info.plist > /dev/null || die "DMChain"
+ /usr/libexec/PlistBuddy -c "Add :DMForkPatches string $DM_FORK_PATCHES" Gen/Info.plist > /dev/null || die "DMForkPatches"
+-if [ -n "${DM_CLOUDKIT_CONTAINER:-}${DM_SAVE_BRIDGE_URL:-}${DM_SAVE_BRIDGE_FALLBACK_URL:-}${DM_SAVE_BRIDGE_TOKEN:-}" ]; then
++if [ -n "${DM_CLOUDKIT_CONTAINER:-}${DM_SAVE_BRIDGE_URL:-}${DM_SAVE_BRIDGE_FALLBACK_URL:-}${DM_SAVE_BRIDGE_TOKEN:-}${DM_SAVE_PROFILES:-}" ]; then
+   python3 -I - Gen/Info.plist <<'PY' || die "save sync Info.plist keys"
+ import os, plistlib, sys
+ p = sys.argv[1]
+ with open(p, 'rb') as f: d = plistlib.load(f)
+-for env_k, plist_k in (('DM_CLOUDKIT_CONTAINER', 'DMCloudKitContainer'), ('DM_SAVE_BRIDGE_URL', 'DMSaveBridgeURL'), ('DM_SAVE_BRIDGE_FALLBACK_URL', 'DMSaveBridgeFallbackURL'), ('DM_SAVE_BRIDGE_TOKEN', 'DMSaveBridgeToken')):
++for env_k, plist_k in (('DM_CLOUDKIT_CONTAINER', 'DMCloudKitContainer'), ('DM_SAVE_BRIDGE_URL', 'DMSaveBridgeURL'), ('DM_SAVE_BRIDGE_FALLBACK_URL', 'DMSaveBridgeFallbackURL'), ('DM_SAVE_BRIDGE_TOKEN', 'DMSaveBridgeToken'), ('DM_SAVE_PROFILES', 'DMSaveProfiles')):
+     v = os.environ.get(env_k, '').strip()
+     if v: d[plist_k] = v
+ if os.environ.get('DM_SAVE_BRIDGE_URL', '').strip():
